@@ -1,0 +1,14 @@
+{
+  "name": "dynamic-acquisition-platform",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Incubation project for shared browser-assisted content acquisition contracts, discovery, planning, and runtime primitives.",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test",
+    "lint": "echo \"lint not configured yet\"",
+    "check": "node scripts/check-contracts.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

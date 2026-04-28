@@ -1,6 +1,5 @@
-'use strict';
-
-const { headerValue } = require('./classifyNetworkEntry');
+import { headerValue } from './classifyNetworkEntry';
+import type { HeaderMap, RawNetworkEntry, RequestSignals } from './types';
 
 const SENSITIVE_HEADERS = new Set([
   'authorization',
@@ -11,13 +10,13 @@ const SENSITIVE_HEADERS = new Set([
   'proxy-authorization',
 ]);
 
-function safeHeaderNames(headers = {}) {
+export function safeHeaderNames(headers: HeaderMap = {}): string[] {
   return Object.keys(headers).filter((name) => !SENSITIVE_HEADERS.has(name.toLowerCase())).sort();
 }
 
-function detectAuthSignals(headers = {}) {
+export function detectAuthSignals(headers: HeaderMap = {}): string[] {
   const names = Object.keys(headers).map((name) => name.toLowerCase());
-  const signals = [];
+  const signals: string[] = [];
   if (names.includes('authorization')) signals.push('authorization-header-present');
   if (names.includes('cookie')) signals.push('cookie-present');
   if (names.includes('x-client-credential')) signals.push('client-credential-header-present');
@@ -25,7 +24,7 @@ function detectAuthSignals(headers = {}) {
   return signals;
 }
 
-function parseUrl(url) {
+function parseUrl(url: string): { origin?: string; pathname: string; queryParamNames: string[] } {
   try {
     const parsed = new URL(url);
     return {
@@ -34,11 +33,11 @@ function parseUrl(url) {
       queryParamNames: [...parsed.searchParams.keys()].sort(),
     };
   } catch {
-    return { origin: undefined, pathname: url, queryParamNames: [] };
+    return { pathname: url, queryParamNames: [] };
   }
 }
 
-function bodyShapeHint(bodyPreview) {
+function bodyShapeHint(bodyPreview?: string): RequestSignals['bodyShape'] {
   if (!bodyPreview) return undefined;
   const trimmed = bodyPreview.trim();
   if (trimmed.startsWith('{')) return 'json-object';
@@ -47,7 +46,7 @@ function bodyShapeHint(bodyPreview) {
   return 'text-preview';
 }
 
-function extractRequestSignals(entry) {
+export function extractRequestSignals(entry: RawNetworkEntry): RequestSignals {
   const parsed = parseUrl(entry.url || '');
   return {
     method: (entry.method || 'GET').toUpperCase(),
@@ -61,5 +60,3 @@ function extractRequestSignals(entry) {
     bodyShape: bodyShapeHint(entry.requestBodyPreview),
   };
 }
-
-module.exports = { extractRequestSignals, detectAuthSignals, safeHeaderNames };

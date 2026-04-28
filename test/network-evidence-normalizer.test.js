@@ -2,8 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateEvidence } = require('../src/contracts');
-const { normalizeNetworkEvidence } = require('../src/discovery/network');
+const { validateEvidence } = require('../dist/contracts');
+const { normalizeNetworkEvidence } = require('../dist/discovery/network');
 
 const basic = require('../src/fixtures/network/synthetic-har-basic.json');
 const authenticated = require('../src/fixtures/network/synthetic-har-authenticated-api.json');

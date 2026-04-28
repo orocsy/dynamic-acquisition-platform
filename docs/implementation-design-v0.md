@@ -137,20 +137,22 @@ test/
   network-evidence-normalizer.test.js
 ```
 
-Later, after TypeScript migration:
+TypeScript foundation:
 
 ```text
 src/
   contracts/
-    Evidence.ts
-    schemas.ts
+    *.schema.js          # runtime validators for v0
 
   discovery/network/
-    NetworkEvidenceNormalizer.ts
-    NetworkEntryClassifier.ts
-    RequestSignalExtractor.ts
-    ResponseSignalExtractor.ts
+    types.ts             # typed domain contracts
+    normalizeNetworkEvidence.ts
+    classifyNetworkEntry.ts
+    extractRequestSignals.ts
+    extractResponseSignals.ts
 ```
+
+The first implementation slice should preserve typed interfaces from the start. Runtime validation remains lightweight CommonJS until the contract layer graduates to a schema library.
 
 ---
 
@@ -545,7 +547,7 @@ But the run itself should not lose its intent, evidence, diagnostics, completed 
 6. Add tests.
 7. Add runtime design docs for auth waits, resume tokens, and checkpoints before browser integration.
 8. Run `npm run check` and `npm test`.
-9. Only then consider TypeScript migration or browser integration.
+9. Only then consider browser integration.
 
 ---
 

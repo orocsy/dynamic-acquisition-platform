@@ -1,8 +1,7 @@
-'use strict';
+import { headerValue } from './classifyNetworkEntry';
+import type { RawNetworkEntry, ResponseSignals } from './types';
 
-const { headerValue } = require('./classifyNetworkEntry');
-
-function responseShapeHint(entry) {
+export function responseShapeHint(entry: RawNetworkEntry): ResponseSignals['bodyShape'] {
   const body = (entry.responseBodyPreview || '').trim();
   const contentType = headerValue(entry.responseHeaders, 'content-type') || entry.mimeType || '';
   if (/json/i.test(contentType)) {
@@ -15,8 +14,8 @@ function responseShapeHint(entry) {
   return body ? 'text-preview' : undefined;
 }
 
-function paginationHints(entry) {
-  const hints = [];
+export function paginationHints(entry: RawNetworkEntry): string[] {
+  const hints: string[] = [];
   const body = entry.responseBodyPreview || '';
   const link = headerValue(entry.responseHeaders, 'link');
   if (link && /rel=["']?next/i.test(link)) hints.push('link-header-next');
@@ -25,7 +24,7 @@ function paginationHints(entry) {
   return hints;
 }
 
-function extractResponseSignals(entry) {
+export function extractResponseSignals(entry: RawNetworkEntry): ResponseSignals {
   return {
     status: entry.status,
     contentType: headerValue(entry.responseHeaders, 'content-type') || entry.mimeType,
@@ -34,5 +33,3 @@ function extractResponseSignals(entry) {
     durationMs: entry.durationMs,
   };
 }
-
-module.exports = { extractResponseSignals, responseShapeHint, paginationHints };

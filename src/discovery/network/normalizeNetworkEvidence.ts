@@ -1,15 +1,24 @@
-'use strict';
+import { validateEvidence } from '../../contracts';
+import { classifyNetworkEntry } from './classifyNetworkEntry';
+import { extractRequestSignals } from './extractRequestSignals';
+import { extractResponseSignals } from './extractResponseSignals';
+import type {
+  Diagnostic,
+  Evidence,
+  NetworkEntryCategory,
+  NetworkEvidenceNormalizerInput,
+  NetworkEvidenceNormalizerResult,
+  RawNetworkEntry,
+  SkippedEntry,
+} from './types';
 
-const { validateEvidence } = require('../../contracts');
-const { classifyNetworkEntry } = require('./classifyNetworkEntry');
-const { extractRequestSignals } = require('./extractRequestSignals');
-const { extractResponseSignals } = require('./extractResponseSignals');
+type ValidationResult = { ok: boolean; errors: string[] };
 
-function stableId(prefix, index) {
+function stableId(prefix: string, index: number): string {
   return `${prefix}_${String(index + 1).padStart(3, '0')}`;
 }
 
-function urlPattern(url) {
+function urlPattern(url: string): string {
   try {
     const parsed = new URL(url);
     return `${parsed.origin}${parsed.pathname}`;
@@ -18,18 +27,22 @@ function urlPattern(url) {
   }
 }
 
-function strategySignalFor(category) {
+function strategySignalFor(category: NetworkEntryCategory): string {
   if (category === 'api-json' || category === 'graphql') return 'request-replay-candidate';
   if (category === 'document-html') return 'browser-render-candidate';
   if (category === 'auth-token-refresh') return 'auth-session-signal';
   return 'unknown-network-signal';
 }
 
-function normalizeNetworkEvidence(input = {}) {
+function sourceKind(entry: RawNetworkEntry): RawNetworkEntry['source'] {
+  return entry.source || 'fixture';
+}
+
+export function normalizeNetworkEvidence(input: NetworkEvidenceNormalizerInput = { entries: [] }): NetworkEvidenceNormalizerResult {
   const entries = Array.isArray(input.entries) ? input.entries : [];
-  const evidence = [];
-  const diagnostics = [];
-  const skipped = [];
+  const evidence: Evidence[] = [];
+  const diagnostics: Diagnostic[] = [];
+  const skipped: SkippedEntry[] = [];
 
   entries.forEach((entry, index) => {
     if (!entry || !entry.url) {
@@ -48,7 +61,7 @@ function normalizeNetworkEvidence(input = {}) {
     const observationId = stableId('obs', evidence.length);
     const evidenceId = stableId('evidence', evidence.length);
 
-    const candidate = {
+    const candidate: Evidence = {
       version: '0.1',
       evidenceId,
       intentId: input.intentId,
@@ -62,7 +75,7 @@ function normalizeNetworkEvidence(input = {}) {
           kind: 'network-request',
           summary: `Observed ${classification.category} network entry`,
           source: {
-            kind: entry.source || 'fixture',
+            kind: sourceKind(entry),
             ref: entry.id || `entry-${index}`,
           },
           data: {
@@ -113,7 +126,7 @@ function normalizeNetworkEvidence(input = {}) {
       ],
     };
 
-    const validation = validateEvidence(candidate);
+    const validation = validateEvidence(candidate) as ValidationResult;
     if (!validation.ok) {
       diagnostics.push({ level: 'error', code: 'INVALID_EVIDENCE', entryId: entry.id, errors: validation.errors });
       skipped.push({ index, id: entry.id, url: entry.url, reason: 'invalid-evidence' });
@@ -126,5 +139,3 @@ function normalizeNetworkEvidence(input = {}) {
 
   return { evidence, diagnostics, skipped };
 }
-
-module.exports = { normalizeNetworkEvidence };

@@ -1,16 +1,16 @@
-'use strict';
+import type { HeaderMap, NetworkEntryClassification, RawNetworkEntry } from './types';
 
 const STATIC_EXTENSIONS = /\.(?:css|js|mjs|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|map)(?:\?|#|$)/i;
 const MEDIA_EXTENSIONS = /\.(?:mp4|webm|mov|mp3|wav|m4a|aac)(?:\?|#|$)/i;
 
-function headerValue(headers, name) {
+export function headerValue(headers: HeaderMap | undefined, name: string): string | undefined {
   if (!headers) return undefined;
   const match = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase());
   return match ? headers[match] : undefined;
 }
 
-function classifyNetworkEntry(entry) {
-  const reasons = [];
+export function classifyNetworkEntry(entry: RawNetworkEntry): NetworkEntryClassification {
+  const reasons: string[] = [];
   const url = entry.url || '';
   const method = (entry.method || 'GET').toUpperCase();
   const contentType = headerValue(entry.responseHeaders, 'content-type') || entry.mimeType || '';
@@ -48,5 +48,3 @@ function classifyNetworkEntry(entry) {
 
   return { category: 'unknown', confidence: method === 'GET' ? 0.4 : 0.5, reasons: ['no strong classifier signal'] };
 }
-
-module.exports = { classifyNetworkEntry, headerValue };

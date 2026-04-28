@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "id": "style",
+      "url": "https://example.com/assets/site.css",
+      "method": "GET",
+      "responseHeaders": { "content-type": "text/css" },
+      "status": 200,
+      "resourceType": "stylesheet",
+      "source": "fixture"
+    },
+    {
+      "id": "logo",
+      "url": "https://example.com/assets/logo.png",
+      "method": "GET",
+      "responseHeaders": { "content-type": "image/png" },
+      "status": 200,
+      "resourceType": "image",
+      "source": "fixture"
+    }
+  ]
+}

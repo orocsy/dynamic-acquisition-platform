@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "id": "authenticated-api",
+      "url": "https://example.com/api/account/items?cursor=abc",
+      "method": "GET",
+      "requestHeaders": {
+        "accept": "application/json",
+        "authorization": "Basic redacted-value",
+        "cookie": "session=redacted-value"
+      },
+      "responseHeaders": { "content-type": "application/json" },
+      "status": 200,
+      "responseBodyPreview": "{\"items\":[{\"id\":1}],\"next\":\"def\"}",
+      "resourceType": "xhr",
+      "source": "fixture",
+      "startedAt": "2026-04-28T00:01:00.000Z",
+      "durationMs": 88
+    }
+  ]
+}

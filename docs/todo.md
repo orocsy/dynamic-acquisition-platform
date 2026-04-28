@@ -1,6 +1,9 @@
 # TODO
 
 ## Immediate
+- [ ] Commit low-level implementation design v0
+- [ ] Add authenticated-web runtime design: login waits, human intervention, timeout, resume/checkpoint contracts
+- [ ] Implement first neutral discovery primitive: network evidence normalizer from synthetic fixtures
 - [ ] Promote daemon runner to default browser entrypoint
 - [ ] Demote default `profile=user` attach routes to explicit/manual mode
 - [ ] Push current stable-daemon phase to GitHub

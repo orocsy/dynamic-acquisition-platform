@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "id": "graphql-query",
+      "url": "https://example.com/graphql",
+      "method": "POST",
+      "requestHeaders": { "content-type": "application/json" },
+      "responseHeaders": { "content-type": "application/json" },
+      "status": 200,
+      "requestBodyPreview": "{\"query\":\"query Resource { resource { id title } }\"}",
+      "responseBodyPreview": "{\"data\":{\"resource\":{\"id\":\"1\"}}}",
+      "resourceType": "xhr",
+      "source": "fixture",
+      "startedAt": "2026-04-28T00:02:00.000Z",
+      "durationMs": 64
+    }
+  ]
+}

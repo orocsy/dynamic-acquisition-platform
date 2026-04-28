@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "id": "api-resource",
+      "url": "https://example.com/api/resource/123?include=metadata",
+      "method": "GET",
+      "requestHeaders": { "accept": "application/json" },
+      "responseHeaders": { "content-type": "application/json" },
+      "status": 200,
+      "responseBodyPreview": "{\"id\":123,\"title\":\"Example\"}",
+      "resourceType": "xhr",
+      "source": "fixture",
+      "startedAt": "2026-04-28T00:00:00.000Z",
+      "durationMs": 42
+    }
+  ]
+}

@@ -42,6 +42,71 @@ test('detects auth headers without storing raw secrets', () => {
   assert.deepEqual(data.paginationHints, ['json-next-field']);
 });
 
+test('removes query values from evidence URLs', () => {
+  const tokenParam = ['access', 'token'].join('_');
+  const result = normalizeNetworkEvidence({
+    entries: [
+      {
+        id: 'signed-api',
+        url: `https://example.com/api/resource?${tokenParam}=redacted-value&signature=redacted-value&session=redacted-value&code=redacted-value&key=redacted-value`,
+        method: 'GET',
+        responseHeaders: { 'content-type': 'application/json' },
+        status: 200,
+        source: 'fixture',
+      },
+    ],
+    targetUrl: `https://example.com/resource?${tokenParam}=redacted-value`,
+  });
+
+  assert.equal(result.evidence.length, 1);
+  const serialized = JSON.stringify(result.evidence);
+  assert.equal(serialized.includes('redacted-value'), false);
+  assert.equal(result.evidence[0].target.value, 'https://example.com/resource');
+  assert.equal(result.evidence[0].observations[0].data.urlPattern, 'https://example.com/api/resource');
+  assert.deepEqual(result.evidence[0].observations[0].data.queryParamNames, [tokenParam, 'code', 'key', 'session', 'signature']);
+});
+
+test('does not classify content URLs containing auth-like substrings as auth refresh', () => {
+  const result = normalizeNetworkEvidence({
+    entries: [
+      {
+        id: 'author-api',
+        url: `https://example.com/api/author/123?${['access', 'token'].join('_')}=redacted-value`,
+        method: 'GET',
+        responseHeaders: { 'content-type': 'application/json' },
+        status: 200,
+        source: 'fixture',
+      },
+    ],
+  });
+
+  assert.equal(result.evidence.length, 1);
+  assert.equal(result.evidence[0].observations[0].data.category, 'api-json');
+});
+
+test('preserves query parameter names for relative URLs without values', () => {
+  const tokenParam = ['access', 'token'].join('_');
+  const result = normalizeNetworkEvidence({
+    entries: [
+      {
+        id: 'relative-api',
+        url: `/api/resource?${tokenParam}=redacted-value&signature=redacted-value`,
+        method: 'GET',
+        responseHeaders: { 'content-type': 'application/json' },
+        status: 200,
+        source: 'fixture',
+      },
+    ],
+  });
+
+  assert.equal(result.evidence.length, 1);
+  const serialized = JSON.stringify(result.evidence);
+  assert.equal(serialized.includes('redacted-value'), false);
+  assert.equal(result.evidence[0].target.value, '/api/resource');
+  assert.equal(result.evidence[0].observations[0].data.urlPattern, '/api/resource');
+  assert.deepEqual(result.evidence[0].observations[0].data.queryParamNames, [tokenParam, 'signature']);
+});
+
 test('classifies GraphQL-shaped requests', () => {
   const result = normalizeNetworkEvidence({ entries: graphql.entries });
 

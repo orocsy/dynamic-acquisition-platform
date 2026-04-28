@@ -1,3 +1,4 @@
+import { pathnameSegments } from './sanitizeUrlForEvidence';
 import type { HeaderMap, NetworkEntryClassification, RawNetworkEntry } from './types';
 
 const STATIC_EXTENSIONS = /\.(?:css|js|mjs|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|map)(?:\?|#|$)/i;
@@ -31,8 +32,9 @@ export function classifyNetworkEntry(entry: RawNetworkEntry): NetworkEntryClassi
     return { category: 'graphql', confidence: 0.86, reasons };
   }
 
-  if (/token|refresh|session|oauth|auth/i.test(url)) {
-    reasons.push('auth/session endpoint hint');
+  const authSegments = new Set(['auth', 'authentication', 'login', 'logout', 'oauth', 'session', 'sessions', 'token', 'refresh', 'refresh-token']);
+  if (pathnameSegments(url).some((segment) => authSegments.has(segment))) {
+    reasons.push('auth/session path segment hint');
     return { category: 'auth-token-refresh', confidence: 0.78, reasons };
   }
 

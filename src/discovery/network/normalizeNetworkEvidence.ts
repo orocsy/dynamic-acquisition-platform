@@ -2,6 +2,7 @@ import { validateEvidence } from '../../contracts';
 import { classifyNetworkEntry } from './classifyNetworkEntry';
 import { extractRequestSignals } from './extractRequestSignals';
 import { extractResponseSignals } from './extractResponseSignals';
+import { sanitizeUrlForEvidence } from './sanitizeUrlForEvidence';
 import type {
   Diagnostic,
   Evidence,
@@ -16,15 +17,6 @@ type ValidationResult = { ok: boolean; errors: string[] };
 
 function stableId(prefix: string, index: number): string {
   return `${prefix}_${String(index + 1).padStart(3, '0')}`;
-}
-
-function urlPattern(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url;
-  }
 }
 
 function strategySignalFor(category: NetworkEntryCategory): string {
@@ -52,7 +44,7 @@ export function normalizeNetworkEvidence(input: NetworkEvidenceNormalizerInput =
 
     const classification = classifyNetworkEntry(entry);
     if (classification.category === 'static-asset' || classification.category === 'media') {
-      skipped.push({ index, id: entry.id, url: entry.url, reason: classification.category });
+      skipped.push({ index, id: entry.id, url: sanitizeUrlForEvidence(entry.url), reason: classification.category });
       return;
     }
 
@@ -67,7 +59,7 @@ export function normalizeNetworkEvidence(input: NetworkEvidenceNormalizerInput =
       intentId: input.intentId,
       target: {
         kind: 'url',
-        value: input.targetUrl || entry.url,
+        value: sanitizeUrlForEvidence(input.targetUrl || entry.url),
       },
       observations: [
         {
@@ -81,7 +73,7 @@ export function normalizeNetworkEvidence(input: NetworkEvidenceNormalizerInput =
           data: {
             category: classification.category,
             method: request.method,
-            urlPattern: urlPattern(entry.url),
+            urlPattern: sanitizeUrlForEvidence(entry.url),
             pathname: request.pathname,
             queryParamNames: request.queryParamNames,
             status: response.status,
@@ -102,7 +94,7 @@ export function normalizeNetworkEvidence(input: NetworkEvidenceNormalizerInput =
           id: stableId('request_family', evidence.length),
           purpose: classification.category === 'document-html' ? 'document-load' : 'content-fetch',
           method: request.method,
-          urlPattern: urlPattern(entry.url),
+          urlPattern: sanitizeUrlForEvidence(entry.url),
           authSignals: request.authSignals,
           sources: [observationId],
           confidence: classification.confidence,
@@ -129,7 +121,7 @@ export function normalizeNetworkEvidence(input: NetworkEvidenceNormalizerInput =
     const validation = validateEvidence(candidate) as ValidationResult;
     if (!validation.ok) {
       diagnostics.push({ level: 'error', code: 'INVALID_EVIDENCE', entryId: entry.id, errors: validation.errors });
-      skipped.push({ index, id: entry.id, url: entry.url, reason: 'invalid-evidence' });
+      skipped.push({ index, id: entry.id, url: sanitizeUrlForEvidence(entry.url), reason: 'invalid-evidence' });
       return;
     }
 

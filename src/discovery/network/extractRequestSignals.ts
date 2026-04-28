@@ -1,4 +1,5 @@
 import { headerValue } from './classifyNetworkEntry';
+import { queryParamNames } from './sanitizeUrlForEvidence';
 import type { HeaderMap, RawNetworkEntry, RequestSignals } from './types';
 
 const SENSITIVE_HEADERS = new Set([
@@ -30,10 +31,10 @@ function parseUrl(url: string): { origin?: string; pathname: string; queryParamN
     return {
       origin: parsed.origin,
       pathname: parsed.pathname,
-      queryParamNames: [...parsed.searchParams.keys()].sort(),
+      queryParamNames: queryParamNames(url),
     };
   } catch {
-    return { pathname: url, queryParamNames: [] };
+    return { pathname: url.split(/[?#]/, 1)[0] || url, queryParamNames: queryParamNames(url) };
   }
 }
 

@@ -1,6 +1,6 @@
 # Dynamic Acquisition Platform — Implementation Design v0
 
-**Status:** Draft v0  
+**Status:** Draft v0
 **Purpose:** Bridge existing high-level architecture into implementable modules, interfaces, functions, and first coding slice.
 
 ---

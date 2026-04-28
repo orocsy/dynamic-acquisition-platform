@@ -1,9 +1,9 @@
 # TODO
 
 ## Immediate
-- [ ] Commit low-level implementation design v0
-- [ ] Add authenticated-web runtime design: login waits, human intervention, timeout, resume/checkpoint contracts
-- [ ] Implement first neutral discovery primitive: network evidence normalizer from synthetic fixtures
+- [x] Commit low-level implementation design v0
+- [x] Add authenticated-web runtime design: login waits, human intervention, timeout, resume/checkpoint contracts
+- [x] Implement first neutral discovery primitive: network evidence normalizer from synthetic fixtures
 - [ ] Promote daemon runner to default browser entrypoint
 - [ ] Demote default `profile=user` attach routes to explicit/manual mode
 - [ ] Push current stable-daemon phase to GitHub
@@ -14,7 +14,7 @@
 - [ ] Evaluate which OpenCLI pieces are worth direct adoption
 - [ ] Design shared browser-core module boundaries
 - [ ] Define strategy-engine interface for public/cookie/header/intercept/ui
-- [ ] Turn the cloud document notes HAR case into the first authenticated discovery -> request-replay provider test
+- [ ] Turn a generic authenticated HAR fixture into the first authenticated discovery -> request-replay provider test
 - [ ] Build a HAR analyzer that extracts provider-relevant ids/endpoints without depending on UI visibility
 
 ## Future

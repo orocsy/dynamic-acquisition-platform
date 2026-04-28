@@ -1,6 +1,6 @@
 # Authenticated Runtime and Resume Design v0
 
-**Status:** Draft v0  
+**Status:** Draft v0
 **Purpose:** Define how the platform handles login-required web flows, human intervention, timeouts, and resumable runs.
 
 ---

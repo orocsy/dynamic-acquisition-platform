@@ -6,20 +6,26 @@ This file indexes the editable Excalidraw sources that accompany the system desi
 
 ## Diagram files
 
-1. **High-level architecture**  
+1. **High-level architecture**
    `dynamic-acquisition-platform-high-level.excalidraw`
 
-2. **Module interactions**  
+2. **Module interactions**
    `dynamic-acquisition-platform-module-interactions.excalidraw`
 
-3. **Backend composition**  
+3. **Backend composition**
    `dynamic-acquisition-platform-backend-composition.excalidraw`
 
-4. **Failure and re-planning loop**  
+4. **Failure and re-planning loop**
    `dynamic-acquisition-platform-failure-replanning.excalidraw`
 
-5. **Product integration map**  
+5. **Product integration map**
    `dynamic-acquisition-platform-product-integration.excalidraw`
+
+6. **Phase 2 runtime lifecycle**
+   `dynamic-acquisition-platform-phase2-runtime-lifecycle.excalidraw`
+
+7. **Phase 2 human intervention and resume sequence**
+   `dynamic-acquisition-platform-phase2-human-resume-sequence.excalidraw`
 
 ## Suggested usage
 
@@ -28,6 +34,8 @@ This file indexes the editable Excalidraw sources that accompany the system desi
 - Use **backend composition** when explaining why backend choice is capability-level instead of run-level.
 - Use **failure and re-planning** when discussing checkpoints, fallback behavior, and AI-assisted orchestration.
 - Use **product integration** when presenting how `consumer workflow`, `production workflow`, and future systems consume the platform.
+- Use **Phase 2 runtime lifecycle** when explaining checkpoint statuses, recoverable waits, expiry, cancellation, and terminal outcomes.
+- Use **Phase 2 human intervention and resume sequence** when explaining why notifications/subscriptions are best-effort and explicit `resumeRun` is the durable continuation path.
 
 ## Next detailed design package to produce after review
 

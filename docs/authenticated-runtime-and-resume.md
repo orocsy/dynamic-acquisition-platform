@@ -3,6 +3,8 @@
 **Status:** Draft v0
 **Purpose:** Define how the platform handles login-required web flows, human intervention, timeouts, and resumable runs.
 
+> Phase 2 detailed design: `runtime-checkpoint-human-intervention-phase2.md`.
+
 ---
 
 ## 1. Position

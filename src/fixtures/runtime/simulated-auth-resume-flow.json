@@ -1,0 +1,58 @@
+{
+  "runId": "run_simulated_auth_resume_001",
+  "targetUrl": "https://example.com/account/items?session=secret-value",
+  "intentSnapshot": {
+    "intentId": "intent_simulated_auth_resume_001",
+    "target": {
+      "kind": "url",
+      "value": "https://example.com/account/items"
+    },
+    "goal": "Collect authenticated account items after human login."
+  },
+  "browserSessionRef": "browser_session_opaque_sim_001",
+  "preAuthEvidenceRefs": ["evidence_intent"],
+  "preAuthArtifactRefs": ["artifact_target_page_shell"],
+  "intentId": "intent_simulated_auth_resume_001",
+  "humanIntervention": {
+    "kind": "login-required",
+    "reason": "Login is required before authenticated discovery can continue.",
+    "instructions": [
+      "Complete login in the controlled browser.",
+      "Return when the authenticated account page is ready."
+    ],
+    "timeoutMs": 600000,
+    "url": "https://example.com/login?token=secret-value"
+  },
+  "clock": {
+    "createdAt": "2026-05-07T02:00:00.000Z",
+    "runningAt": "2026-05-07T02:01:00.000Z",
+    "interventionRequestedAt": "2026-05-07T02:02:00.000Z",
+    "interventionCompletedAt": "2026-05-07T02:05:00.000Z",
+    "resumedAt": "2026-05-07T02:06:00.000Z",
+    "authRecheckedAt": "2026-05-07T02:07:00.000Z",
+    "evidenceNormalizedAt": "2026-05-07T02:08:00.000Z",
+    "completedAt": "2026-05-07T02:09:00.000Z",
+    "failedAt": "2026-05-07T02:07:30.000Z"
+  },
+  "networkEntries": [
+    {
+      "id": "authenticated-items-api",
+      "url": "https://example.com/api/account/items?cursor=abc&session=secret-value",
+      "method": "GET",
+      "requestHeaders": {
+        "accept": "application/json",
+        "authorization": "Bearer secret-value",
+        "cookie": "session=secret-value"
+      },
+      "responseHeaders": {
+        "content-type": "application/json"
+      },
+      "status": 200,
+      "responseBodyPreview": "{\"items\":[{\"id\":1}],\"next\":\"def\"}",
+      "resourceType": "xhr",
+      "source": "fixture",
+      "startedAt": "2026-05-07T02:08:00.000Z",
+      "durationMs": 88
+    }
+  ]
+}

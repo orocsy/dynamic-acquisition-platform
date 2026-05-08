@@ -1,8 +1,8 @@
 # Runtime Checkpoint and Human Intervention — Phase 2 Design
 
-**Status:** Draft v0
+**Status:** Implemented through Phase 2.6 hardening
 **Phase:** 2 — runtime foundation before real browser integration
-**Scope:** checkpoint lifecycle, human-intervention lifecycle, resumable continuation, deterministic simulation
+**Scope:** checkpoint lifecycle, human-intervention lifecycle, resumable continuation, deterministic simulation, safety hardening
 **Out of scope:** Phase 3 browser/daemon integration details, real authenticated capture, strategy engine execution
 
 ---
@@ -21,6 +21,8 @@ The next missing layer is not a browser yet. The next missing layer is the runti
 > When an acquisition run hits login, MFA, consent, captcha, timeout, crash, or a human decision point, the platform must pause safely, persist enough state, and resume deterministically without losing evidence or pretending the run failed.
 
 Phase 2 turns that into executable contracts and tests.
+
+Phase 2.6 hardening keeps the runtime browser-free and updates this document to match the implemented code rather than the earlier sketch.
 
 ---
 
@@ -73,10 +75,11 @@ Start with an in-memory implementation behind an interface:
 
 ```ts
 interface CheckpointStore {
-  create(checkpoint: RunCheckpoint): Promise<RunCheckpoint>;
+  create(checkpoint: RunCheckpoint, acceptedTransitionEvent?: RuntimeEvent): Promise<RunCheckpoint>;
   get(runId: string): Promise<RunCheckpoint | undefined>;
-  update(runId: string, patch: CheckpointPatch): Promise<RunCheckpoint>;
+  update(runId: string, patch: CheckpointPatch, acceptedTransitionEvent?: RuntimeEvent): Promise<RunCheckpoint>;
   appendEvent(event: RuntimeEvent): Promise<void>;
+  listEvents(runId: string): Promise<RuntimeEvent[]>;
   listWaiting(now: string): Promise<RunCheckpoint[]>;
 }
 ```
@@ -93,6 +96,7 @@ interface InterventionStore {
   get(requestId: string): Promise<HumanInterventionRequest | undefined>;
   complete(input: HumanInterventionCompletion): Promise<HumanInterventionRequest>;
   expire(requestId: string, now: string): Promise<HumanInterventionRequest>;
+  cancel(requestId: string, now: string): Promise<HumanInterventionRequest>;
 }
 ```
 
@@ -111,6 +115,8 @@ The coordinator owns legal transitions:
 - `markFailed`
 - `markCompleted`
 - `cancelRun`
+- `confirmResumeAuthRecheck`
+- `recordNormalizedEvidence`
 
 No module should mutate runtime state directly around the coordinator.
 
@@ -124,6 +130,7 @@ intent accepted
   -> auth required detected
   -> human intervention requested
   -> human intervention completed
+  -> resumeRun enters running_after_resume/auth_state_recheck
   -> auth state rechecked
   -> network evidence normalized
   -> completed
@@ -203,7 +210,10 @@ type RuntimeEvent = {
     | 'intervention.requested'
     | 'intervention.completed'
     | 'intervention.expired'
+    | 'intervention.cancelled'
     | 'run.resumed'
+    | 'auth.rechecked'
+    | 'evidence.normalized'
     | 'run.failed'
     | 'run.completed'
     | 'run.cancelled';
@@ -304,9 +314,9 @@ The acquisition run must not depend on a long-lived subscription to survive.
 If the process restarts, gateway refreshes, context compacts, or a worker crashes, the runtime should recover by querying persistent state:
 
 ```text
-list waiting/expired/completed intervention records
-  -> find resumable checkpoints
-  -> call resumeRun(runId, resumeToken or trusted completion ref)
+list waiting checkpoints and completed intervention records
+  -> find completed requests whose checkpoint is still waiting_for_human
+  -> call resumeRun(runId, requestId, expectedVersion)
 ```
 
 For Phase 2 implementation, an in-memory event bus is fine for tests. The contract should still be designed so a durable event bus or queue can be added later.
@@ -320,15 +330,25 @@ requestHumanIntervention(input)
   -> returns request + one-time raw resumeToken
 
 completeHumanIntervention(input)
-  -> validates token hash and request status
-  -> marks request completed/cancelled/unsafe
-  -> updates checkpoint
-  -> emits intervention.completed
+  -> validates token hash and pending request status
+  -> marks request completed/cancelled/expired
+  -> keeps completed requests resumable; cancels or expires unsafe stop paths
+  -> emits intervention.completed/intervention.cancelled/intervention.expired
 
 resumeRun(input)
-  -> validates checkpoint status/version
+  -> validates completed request plus checkpoint status/version
   -> moves to running_after_resume
-  -> starts at nextStepId, usually auth_state_recheck
+  -> starts at nextStepId, which Phase 2 requires to be auth_state_recheck
+
+confirmResumeAuthRecheck(input)
+  -> moves running_after_resume back to running/discovering_network
+  -> clears fragile pending resume metadata
+  -> emits auth.rechecked
+
+recordNormalizedEvidence(input)
+  -> accepts only running checkpoints
+  -> attaches normalized evidence refs
+  -> emits evidence.normalized
 ```
 
 The key point: **subscribe is a convenience path; `resumeRun` is the durable continuation path.**
@@ -348,18 +368,22 @@ created
   -> running
   -> waiting_for_human
   -> running_after_resume
+  -> running
   -> completed
 
 running
   -> failed
   -> cancelled
 
+running_after_resume
+  -> running       (auth.rechecked)
+  -> failed        (auth recheck failed)
+
 waiting_for_human
   -> expired
   -> cancelled
 
 expired
-  -> waiting_for_human
   -> failed
   -> cancelled
 ```
@@ -378,15 +402,18 @@ Text version:
 
 ```text
 RuntimeCoordinator
-  -> CheckpointStore: persist waiting checkpoint
   -> InterventionStore: create request + token hash
-  -> EventBus/UI: emit intervention.requested
+  -> CheckpointStore: persist waiting checkpoint + intervention.requested event
+  -> Human/UI delivery layer: show request + one-time raw resume token boundary
   -> Human: perform login/MFA/captcha/decision
   -> Runtime API: completeHumanIntervention(...resumeToken)
-  -> CheckpointStore: mark running_after_resume
+  -> CheckpointStore: persist completed/cancelled/expired outcome event
   -> RuntimeCoordinator: resumeRun
-  -> Acquisition step: auth_state_recheck
-  -> Discovery: continue evidence capture/normalization
+  -> CheckpointStore: mark running_after_resume/auth_state_recheck
+  -> RuntimeCoordinator: confirmResumeAuthRecheck
+  -> Discovery: normalize synthetic network evidence
+  -> RuntimeCoordinator: recordNormalizedEvidence
+  -> RuntimeCoordinator: markCompleted
 ```
 
 ---
@@ -414,17 +441,19 @@ Add tests for:
 - created -> running
 - running -> waiting_for_human
 - waiting_for_human -> running_after_resume
-- running_after_resume -> completed
+- running_after_resume -> running after `auth.rechecked`
+- running_after_resume -> failed when auth recheck fails
+- running -> completed after evidence normalization
 - waiting_for_human -> expired
 - waiting_for_human -> cancelled
-- expired is resumable and not equivalent to failed
+- expired is non-terminal but only proceeds to failed/cancelled in Phase 2
 
 ### Intervention lifecycle
 
 - request generation creates token preview + hash
 - raw token is not stored in persistent request/checkpoint objects
 - completion validates token hash
-- duplicate completion is safe
+- duplicate completion is rejected with a structured error and no state mutation
 - cancellation does not resume acquisition
 - timeout marks request expired and checkpoint expired
 
@@ -433,12 +462,13 @@ Add tests for:
 - resume starts at `nextStepId`
 - first resumed step is `auth_state_recheck`
 - evidenceRefs/artifactRefs/diagnostics survive wait/resume
-- stale version or wrong token rejects resume
+- stale version, duplicate resume, or wrong token rejects resume without appending events
 
 ### Safety checks
 
 - credential-like input does not appear in diagnostics/events
 - URL query values are sanitized
+- unsafe `browserSessionRef` values such as profile paths or cookie-bearing strings are redacted
 - auth/captcha/MFA instructions stay within allowed human-assisted boundaries
 
 ### Simulation

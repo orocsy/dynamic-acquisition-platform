@@ -5,9 +5,14 @@
 - [x] Add authenticated-web runtime design: login waits, human intervention, timeout, resume/checkpoint contracts
 - [x] Implement first neutral discovery primitive: network evidence normalizer from synthetic fixtures
 - [x] Document Phase 2 runtime checkpoint and human-intervention design, including resume-vs-subscribe boundary and diagrams
-- [ ] Implement Phase 2 runtime contracts and in-memory checkpoint/intervention stores
-- [ ] Implement Phase 2 runtime coordinator transitions and deterministic resume simulation
-- [ ] Add Phase 2 token/redaction/idempotency tests
+- [x] Break Phase 2 into quality-focused implementation slices: `docs/phase2-implementation-breakdown.md`
+- [x] Add Phase 2 implementation diagrams under `docs/diagrams/`
+- [x] Phase 2.1: Implement runtime contracts and state invariants
+- [x] Phase 2.2: Implement in-memory checkpoint/intervention stores plus token/redaction helpers
+- [x] Phase 2.3: Implement runtime coordinator core transitions
+- [x] Phase 2.4: Implement human intervention request/completion/resume-entry lifecycle
+- [x] Phase 2.5: Implement deterministic resume simulation
+- [x] Phase 2.6: Harden runtime tests/docs and update TODOs after verification
 
 ## Browser/runtime follow-up after Phase 2 foundation is stable
 - [ ] Promote daemon runner to default browser entrypoint

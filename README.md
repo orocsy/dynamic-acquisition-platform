@@ -52,4 +52,11 @@ After that, the next slice is a provider-neutral HAR/network discovery normalize
 
 ## Status
 
-Early incubation. Contracts and architecture are being stabilized before runtime implementation.
+Early incubation. Contracts, network evidence normalization, and the Phase 2 checkpoint/human-intervention runtime foundation are implemented. Phase 3 is currently in docs-first design for dedicated Chrome daemon integration.
+
+Current Phase 3 docs:
+
+- `docs/phase3-browser-daemon-integration-design.md`
+- `docs/phase3-implementation-breakdown.md`
+- `docs/browser-daemon-runtime-boundary.md`
+- `docs/phase3-testing-validation-plan.md`

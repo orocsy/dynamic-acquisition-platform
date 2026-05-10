@@ -15,7 +15,16 @@
 - [x] Phase 2.6: Harden runtime tests/docs and update TODOs after verification
 
 ## Browser/runtime follow-up after Phase 2 foundation is stable
-- [ ] Promote daemon runner to default browser entrypoint
+- [x] Draft Phase 3 docs-first design package before implementation
+- [x] Define Phase 3 implementation breakdown and quality gates
+- [ ] Add/share Phase 3 daemon/runtime and auth-resume diagrams if needed
+- [ ] Phase 3.1: Implement browser contracts and opaque refs
+- [ ] Phase 3.2: Implement daemon health/start boundary
+- [ ] Phase 3.3: Implement page target lifecycle
+- [ ] Phase 3.4: Implement network capture -> evidence bridge
+- [ ] Phase 3.5: Implement auth boundary -> human intervention bridge
+- [ ] Phase 3.6: Implement browser-backed resume auth recheck
+- [ ] Phase 3.7: Promote daemon runner to default browser entrypoint and audit policy/docs
 - [ ] Demote default `profile=user` attach routes to explicit/manual mode
 - [ ] Push current stable-daemon phase to GitHub
 - [ ] Audit all scripts/docs for old browser attach assumptions

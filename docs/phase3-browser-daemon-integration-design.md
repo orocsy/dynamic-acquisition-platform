@@ -374,6 +374,7 @@ No test should require Sean's real Chrome session.
 This design is paired with the committed markdown docs:
 
 - `docs/phase3-implementation-breakdown.md`
+- `docs/phase3-low-level-design.md`
 - `docs/browser-daemon-runtime-boundary.md`
 - `docs/phase3-testing-validation-plan.md`
 

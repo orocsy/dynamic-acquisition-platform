@@ -58,5 +58,6 @@ Current Phase 3 docs:
 
 - `docs/phase3-browser-daemon-integration-design.md`
 - `docs/phase3-implementation-breakdown.md`
+- `docs/phase3-low-level-design.md`
 - `docs/browser-daemon-runtime-boundary.md`
 - `docs/phase3-testing-validation-plan.md`

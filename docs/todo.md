@@ -17,6 +17,7 @@
 ## Browser/runtime follow-up after Phase 2 foundation is stable
 - [x] Draft Phase 3 docs-first design package before implementation
 - [x] Define Phase 3 implementation breakdown and quality gates
+- [x] Add Phase 3 low-level design for 3.1–3.7 implementation slices
 - [ ] Add/share Phase 3 daemon/runtime and auth-resume diagrams if needed
 - [ ] Phase 3.1: Implement browser contracts and opaque refs
 - [ ] Phase 3.2: Implement daemon health/start boundary

@@ -28,6 +28,7 @@ Phase 3 starts with docs before implementation, mirroring the Phase 2 approach:
 
 - `phase3-browser-daemon-integration-design.md` — browser daemon integration design
 - `phase3-implementation-breakdown.md` — 3.1–3.7 implementation slices and gates
+- `phase3-low-level-design.md` — module/API/test-level design for each Phase 3 slice
 - `browser-daemon-runtime-boundary.md` — runtime/browser boundary and policy rules
 - `phase3-testing-validation-plan.md` — unit, fixture, daemon smoke, and manual auth validation plan
 

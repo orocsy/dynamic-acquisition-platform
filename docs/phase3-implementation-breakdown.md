@@ -2,6 +2,7 @@
 
 **Status:** Draft v0 — docs-first, pre-implementation
 **Parent design:** `docs/phase3-browser-daemon-integration-design.md`
+**Low-level design:** `docs/phase3-low-level-design.md`
 **Goal:** connect the Phase 2 checkpoint runtime to a dedicated Chrome daemon without letting browser details own platform state.
 
 ---
@@ -412,6 +413,12 @@ npm run check
 ```
 
 ---
+
+## Low-Level Design Reference
+
+Detailed module, API, helper, test, and exit-criteria guidance for each Phase 3 slice lives in `docs/phase3-low-level-design.md`.
+
+Use that document before writing Phase 3 code. This file remains the roadmap and quality-gate index; the LLD file is the implementation blueprint.
 
 ## Phase 3 Quality Gate
 

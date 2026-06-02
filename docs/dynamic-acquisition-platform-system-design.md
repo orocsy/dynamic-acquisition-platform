@@ -270,6 +270,11 @@ This system uses a hybrid style:
 
 **Why:** This keeps reuse high and migration incremental.
 
+## AD-6: Desktop/UI bridge fallback is explicit, optional, and policy-gated
+**Decision:** Add a future desktop/UI bridge backend path for GUI-only/manual-bridge situations, with Peekaboo as the first candidate implementation to evaluate.
+
+**Why:** Some acquisition failures are not solvable through CDP/network/API paths alone. A desktop/UI bridge can recover native dialogs, visual-only exports, OS-level prompts, and brittle manual flows, but only if it remains an explicit fallback behind platform policy, redaction, and checkpoint contracts. It must never become a silent replacement for daemon mode or `profile=user` attach.
+
 ---
 
 # 8. Core Domain Model
@@ -495,6 +500,8 @@ Expose stable platform-level operations to callers and the AI harness.
 - `discover.target`
 - `discover.browser.network`
 - `discover.har`
+- `discover.desktop_ui.snapshot`
+- `act.desktop_ui.manual_bridge`
 - `evidence.normalize`
 - `strategy.select`
 - `plan.build`
@@ -519,6 +526,7 @@ Choose which backend fulfills a capability at execution time.
 - native render backend
 - native packaging backend
 - specialized replay backend
+- desktop/UI bridge backend, e.g. a Peekaboo-style adapter for explicit GUI-only fallback
 - future external tools
 
 ### Selection criteria
@@ -610,6 +618,7 @@ No single backend is optimal across:
 - rendering
 - packaging
 - validation
+- GUI-only/manual bridge recovery
 
 ## 10.2 Backend ownership model
 
@@ -628,6 +637,19 @@ OpenCLI should be treated as:
 - a strong command-oriented backend
 - especially useful for browser discovery and existing site capabilities
 - not the owner of planning or artifacts
+
+## 10.4 Desktop/UI bridge fallback role
+A desktop/UI bridge backend should be treated as:
+- a last-resort, policy-gated backend for GUI-only/manual-bridge failures,
+- useful for native dialogs, visual-only export affordances, OS prompts, brittle auth/captcha/manual walls, and screen-only state confirmation,
+- an observation/action adapter that returns sanitized facts and opaque refs, not raw desktop recordings by default,
+- a fallback selected by the strategy/runtime policy, not by backend self-escalation.
+
+It should not:
+- replace daemon-first browser execution,
+- trigger automatically when the daemon is unavailable,
+- persist raw screenshots, OCR, accessibility trees, window titles, credentials, MFA/OTP values, captcha answers, cookies, or unrelated app contents,
+- leak Peekaboo-specific concepts into platform evidence/plan/runtime contracts.
 
 ---
 
@@ -848,6 +870,7 @@ At minimum classify failures as:
 - discovery insufficiency
 - auth unavailable
 - backend unsupported
+- GUI-only/manual desktop bridge required
 - execution step failure
 - artifact contract failure
 - validation failure
@@ -871,6 +894,8 @@ Backends must not redefine platform contracts.
 
 ## 17.2 Credential handling
 Reuse authenticated browser/session state where needed, but avoid exporting sensitive auth material unless explicitly required by a selected capability.
+
+Desktop/UI bridge backends require stricter capture minimization: collect only the active target/window region needed for the approved step, redact before persistence, and keep raw screenshots/OCR/accessibility data out of checkpoints unless the artifact contract explicitly permits them.
 
 ## 17.3 AI harness boundaries
 AI may influence planning and execution routing, but must not bypass:

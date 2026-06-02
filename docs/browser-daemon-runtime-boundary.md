@@ -92,6 +92,24 @@ Fallback rule:
 
 This is the key rule that prevents recurring automation from disturbing Sean's daily browser session.
 
+### Desktop/UI Bridge Fallback
+
+A future Peekaboo-style desktop/UI bridge may be useful for GUI-only/manual-bridge cases, but it is not a daemon recovery path. It can run only when strategy/runtime policy marks the step as `desktop_ui_bridge_candidate` and an explicit approval or allow-policy selects it.
+
+Allowed purpose:
+
+```text
+GUI-only/manual bridge recovery after normal browser/network capabilities are insufficient
+```
+
+Not allowed:
+
+```text
+daemon unavailable -> silently control Sean's desktop or live browser
+```
+
+The boundary remains the same: runtime owns state, adapters return sanitized observations and opaque refs, and raw screen/OCR/accessibility data must not enter checkpoints by default.
+
 ---
 
 ## Runtime State Policy

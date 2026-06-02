@@ -414,6 +414,55 @@ npm run check
 
 ---
 
+## Post-Phase-3 Backlog — Explicit Desktop/UI Bridge Fallback
+
+**Status:** Backlog candidate — design after Phase 3.7 policy audit, build only after daemon-first runtime is stable.
+**Candidate implementation:** Peekaboo-style macOS desktop observation/action adapter behind a provider-neutral port.
+
+### Purpose
+
+Add a controlled fallback for GUI-only/manual-bridge cases that daemon/CDP/network capabilities cannot complete safely. This is for native dialogs, visual-only export flows, OS-level permission prompts, captcha/manual walls, or pages where network evidence is insufficient but a human-approved desktop/UI assist can recover the run.
+
+This must not become a generic automation shortcut. It is a last-resort capability selected by strategy policy or explicit operator approval.
+
+### Proposed files
+
+```text
+src/backends/desktopUiBridge/types.ts
+src/backends/desktopUiBridge/desktopUiBridgePort.ts
+src/backends/desktopUiBridge/desktopUiBridgeRedaction.ts
+src/backends/desktopUiBridge/fakeDesktopUiBridge.ts
+src/backends/desktopUiBridge/peekabooDesktopUiBridge.ts
+test/desktop-ui-bridge-policy.test.js
+test/desktop-ui-bridge-redaction.test.js
+test/desktop-ui-bridge-fallback-plan.test.js
+```
+
+### Implementation rules
+
+- The adapter returns sanitized observations and opaque refs, never raw screen dumps by default.
+- Running it requires `fallbackPolicy.allowDesktopUiBridge === true` or an explicit human/operator approval.
+- It cannot be selected as a response to simple daemon unavailability.
+- It cannot read or persist credentials, OTP/MFA values, captcha answers, cookies, profile paths, raw accessibility trees, or unrelated window contents.
+- It should integrate through the same runtime checkpoint/failure/replan path as other backends.
+
+### Tests / checks
+
+- policy rejects silent daemon -> desktop/UI fallback,
+- policy allows explicit GUI-only fallback candidate,
+- fake adapter observations redact OCR/window/accessibility content,
+- fallback plan records why desktop/UI bridge was selected,
+- run metadata distinguishes `desktop_ui_bridge_candidate`, `desktop_ui_bridge_selected`, and `desktop_ui_bridge_declined`.
+
+### Definition of done
+
+- Provider-neutral port exists before any Peekaboo-specific implementation details leak upward.
+- Unit tests prove redaction and selection policy.
+- One optional manual smoke test can run a harmless desktop/UI observation without affecting Sean's daily browser profile.
+- Documentation keeps daemon-first as default and desktop/UI bridge as explicit fallback only.
+
+---
+
 ## Low-Level Design Reference
 
 Detailed module, API, helper, test, and exit-criteria guidance for each Phase 3 slice lives in `docs/phase3-low-level-design.md`.

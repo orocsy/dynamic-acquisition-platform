@@ -8,6 +8,7 @@ Build a stable browser automation foundation where the browser is a long-lived i
 - Use the browser for discovery, auth bridge, lazy-load triggering, and request observation.
 - Prefer API/cookie/header/intercept execution over long-term DOM-only automation when possible.
 - Separate shared browser core from task-specific flows.
+- Keep desktop/UI bridge fallback (Peekaboo-style) as an explicit future backend for GUI-only/manual cases, never as silent daemon or `profile=user` fallback.
 
 ## Immediate implications
 - Eliminate default attach to `profile=user` for routine automation.

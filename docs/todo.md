@@ -19,14 +19,16 @@
 - [x] Define Phase 3 implementation breakdown and quality gates
 - [x] Add Phase 3 low-level design for 3.1–3.7 implementation slices
 - [ ] Add/share Phase 3 daemon/runtime and auth-resume diagrams if needed
-- [ ] Phase 3.1: Implement browser contracts and opaque refs
-- [ ] Phase 3.2: Implement daemon health/start boundary
-- [ ] Phase 3.3: Implement page target lifecycle
+- [x] Phase 3.1: Implement browser contracts and opaque refs
+- [x] Phase 3.2: Implement daemon health/start boundary (CDP `ChromeDaemonClient` + `FakeBrowserDaemonClient` + opaque session registry + header redaction-by-construction)
+- [x] Phase 3.3: Implement page target lifecycle (`PageTargetController` state machine, `navigationPolicy`, `pageTargetErrors`, `FakePageTargetController` + real `ChromePageTargetController` behind an injected CDP transport port; cleaned up 3 speculative unused types in `browser/types.ts`)
 - [ ] Phase 3.4: Implement network capture -> evidence bridge
 - [ ] Phase 3.5: Implement auth boundary -> human intervention bridge
 - [ ] Phase 3.6: Implement browser-backed resume auth recheck
 - [ ] Phase 3.7: Promote daemon runner to default browser entrypoint and audit policy/docs
 - [ ] Demote default `profile=user` attach routes to explicit/manual mode
+- [ ] Design explicit desktop/UI bridge fallback adapter (Peekaboo candidate) as an operator-selected GUI-only/manual fallback, not a daemon-failure fallback
+- [ ] Build desktop/UI bridge fallback spike after Phase 3.7: provider-neutral port, fake adapter, policy/redaction tests, optional harmless manual smoke
 - [ ] Push current stable-daemon phase to GitHub
 - [ ] Audit all scripts/docs for old browser attach assumptions
 
@@ -35,6 +37,7 @@
 - [ ] Evaluate which OpenCLI pieces are worth direct adoption
 - [ ] Design shared browser-core module boundaries
 - [ ] Define strategy-engine interface for public/cookie/header/intercept/ui
+- [ ] Define fallback policy taxonomy for `desktop_ui_bridge_candidate`, `desktop_ui_bridge_selected`, and `desktop_ui_bridge_declined`
 - [ ] Turn a generic authenticated HAR fixture into the first authenticated discovery -> request-replay provider test
 - [ ] Build a HAR analyzer that extracts provider-relevant ids/endpoints without depending on UI visibility
 

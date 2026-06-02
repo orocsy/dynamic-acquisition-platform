@@ -113,6 +113,19 @@ completeHumanIntervention
   -> continue capture/evidence
 ```
 
+### 4.6 Desktop/UI bridge is an explicit last-resort fallback
+
+Some targets will remain GUI-only even after daemon/CDP/network capture is working: native file pickers, OS permission prompts, visual-only exports, brittle auth walls, or flows where the browser daemon can see the page but not safely complete the acquisition path.
+
+Treat a Peekaboo-style desktop/UI bridge as a future backend adapter, not as Phase 3's default browser runtime and not as a silent daemon failure fallback. It may be selected only by policy or explicit operator approval when:
+
+- deterministic daemon/browser capabilities cannot satisfy the plan step,
+- the step is classified as GUI-only or manual-bridge-required,
+- screenshot/screen observations are sanitized before becoming evidence or diagnostics,
+- runtime checkpoints store only opaque desktop-bridge refs and redacted summaries.
+
+This keeps the fallback useful without letting generic desktop automation weaken the platform contracts.
+
 ---
 
 ## 5. Proposed Phase 3 Architecture
@@ -313,6 +326,9 @@ Do not over-classify. If unsure, record a diagnostic and either fail safely or r
 | Target/page stale after resume | recreate target from checkpoint if safe; otherwise request human or fail |
 | Secret-like data observed | redact before checkpoint/event/diagnostic persistence |
 | Browser crash mid-run | preserve checkpoint; later retry starts from last safe phase |
+| GUI-only/manual desktop boundary | mark `desktop_ui_bridge_candidate`; require explicit policy/operator selection before any desktop/UI bridge adapter runs |
+
+Desktop/UI bridge fallback is therefore a planning/runtime decision, not an automatic browser-daemon recovery behavior. A daemon outage should still fail with a daemon diagnostic rather than escalating to live-user or desktop control.
 
 ---
 
@@ -366,6 +382,7 @@ No test should require Sean's real Chrome session.
 - Keep browser refs opaque.
 - Human instructions should be specific but not credential-seeking.
 - Runtime should support explicit cancellation when the target looks unsafe.
+- Desktop/UI bridge adapters must not persist raw screenshots, screen recordings, OCR text, window titles, or accessibility trees unless an artifact contract explicitly requires them and redaction has run first.
 
 ---
 
@@ -384,9 +401,10 @@ Optional Excalidraw sketches may exist locally during design, but they are not r
 
 ## 15. Open Questions
 
-1. Should the first real daemon adapter use direct raw CDP only, or keep Playwright as an optional implementation behind the same interface?
-2. Should browser session refs be persisted in checkpoint only, or also in a separate browser-session registry?
+1. ~~Should the first real daemon adapter use direct raw CDP only, or keep Playwright as an optional implementation behind the same interface?~~ **Resolved (Phase 3.2):** the real adapter (`ChromeDaemonClient`) uses raw CDP over the daemon's HTTP `/json/version` endpoint. This matches the "browser as long-lived infrastructure we attach to" thesis; Playwright would want to own the browser lifecycle. `playwright` stays in the `BrowserObservation.source` union as a possible future implementation behind the same `BrowserDaemonClient` interface, but is not built.
+2. ~~Should browser session refs be persisted in checkpoint only, or also in a separate browser-session registry?~~ **Resolved (Phase 3.2):** both, with a split. The checkpoint persists only an opaque `session:<uuid>` surrogate; an `InMemoryBrowserSessionRegistry` maps that surrogate to `{ daemonId, runId, pageTargetRef, targetUrlPreview }`. This keeps the runId/daemon out of the checkpoint (no cross-run linkability from checkpoint data) and gives Phase 3.6 stale-target recreation context a home. The transparent `createBrowserSessionRef` form is retained registry-side only.
 3. What is the smallest manual smoke test that proves daemon capture without making CI brittle?
 4. Which downstream workflow should be the first adapter consumer after core Phase 3 passes fixture tests?
 5. Should OpenCLI be tested as a backend in Phase 3, or deferred until Phase 4 strategy/backend composition?
+6. Should the desktop/UI bridge fallback target Peekaboo first, or define a provider-neutral adapter and keep Peekaboo as the first implementation candidate?
 

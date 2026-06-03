@@ -1,4 +1,4 @@
-# Handoff — Phase 3.3 complete (review round 6 applied), ready for 3.4
+# Handoff — Phase 3.3 complete (review round 8 applied), ready for 3.4
 
 Snapshot for picking this up in a fresh session (e.g. Claude Code). Read this
 first, then `docs/phase3-low-level-design.md` for the slice you're building.
@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **128 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **133 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -51,11 +51,12 @@ In `src/browser/`:
 
 ## The persistence guard (read this before touching the registry)
 
-Six review rounds found the **same defect class**: a browser value that bypassed
-a guard the author had already written (header values, then `targetUrlPreview`,
-then `pageTargetRef`'s *presence*, then its *shape* + the controller's error/
-diagnostic echo paths, then *whitespace* canonicalization + bare-credential
-diagnostic strings). The consolidation fix:
+Seven review rounds found the **same defect class**: a browser value that bypassed
+a guard the author had already written (header values → `targetUrlPreview` →
+`pageTargetRef` presence → its *shape* + controller error/diagnostic echo →
+*whitespace* canonicalization + bare-credential diagnostics → the **transparent-ref
+fallback regex, the registry's unsafe-id error echo, and `sanitizeUrlPreview`'s
+scheme handling**). The consolidation fix:
 
 `src/browser/persistenceGuard.ts` is now the single place that classifies every
 persisted browser value. The registry **cannot** build a stored record except
@@ -151,6 +152,27 @@ exists to catch:
    also closes the parallel `sessionId` hole, not just `pageTargetRef`);
 3. a stale `guardOpaqueRef` mention in `pageTargetController.ts`'s header comment →
    corrected to `guardPageTargetRef` (the README/HANDOFF were already fixed).
+
+**Review round 7 (this session) closed three persistence-layer leaks** — the same
+class, in the guards I had *not* adversarially probed (I'd hardened `pageTargetRef`
++ diagnostics, not these). All three reproduced against the live `dist/browser`:
+1. `guardTransparentRef`'s fallback `^daemon:[^\s]+:session:[^\s]+$` let `[^\s]+`
+   swallow a whole `ws://…/devtools/…` URL between the delimiters →
+   `daemon:ws://…/devtools/…:session:run` persisted. **(Round 8 follow-up:** the
+   round-7 fix added an `isOpaqueBrowserRef` short-circuit that still let
+   colon-smuggled parts `daemon:a:b:session:run` and extra tails
+   `daemon:…:session:run:extra` bypass. Final form: any `daemon:`-prefixed value is
+   ALWAYS validated as `daemon:[^:]+:session:[^:]+` with `isSafeBrowserRefPart`
+   parts — the opaque fallback applies only to non-`daemon:` values.**)**;
+2. `InMemoryBrowserSessionRegistry.update()` echoed a caller's unsafe `sessionId`
+   (a raw `ws://…?token=…`) in its "not found" error → now redacted via
+   `sessionIdForError` (safe surrogates still named);
+3. `sanitizeUrlPreview` stripped the query but kept the scheme, so `ws`/`wss`/
+   `chrome`/`devtools` survived as a persisted `targetUrlPreview` → now only
+   http/https previews are kept; other schemes are dropped.
+The whole guard/echo surface of the persistence layer was then swept by probe
+(transparent ref, surrogate id, page ref, ref parts, url preview, registry
+update/register/get) — all green.
 
 ## Design decisions already locked (don't relitigate)
 

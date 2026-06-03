@@ -9,6 +9,7 @@ const {
   guardPageTargetRef,
   guardRefPart,
   guardSurrogateSessionId,
+  guardTransparentRef,
   sanitizeUrlPreview,
   BrowserPersistenceError,
 } = require('../dist/browser');
@@ -102,4 +103,56 @@ test('guards reject whitespace-padded refs (validate == persist)', () => {
   // canonical forms still pass through unchanged
   assert.equal(guardPageTargetRef('pageTargetRef', 'page:x'), 'page:x');
   assert.equal(guardSurrogateSessionId('sessionId', 'session:x'), 'session:x');
+});
+
+// The transparent-ref fallback must not let a raw ws://devtools URL ride between
+// the daemon:/:session: delimiters and get persisted (the `[^\s]+` swallow hole).
+test('guardTransparentRef rejects a ws:// URL smuggled into a transparent ref', () => {
+  const evil = 'daemon:ws://127.0.0.1:9222/devtools/browser/RAW:session:run_1';
+  assert.throws(() => guardTransparentRef('transparentRef', evil), BrowserPersistenceError);
+  assert.throws(() => toPersistableSessionRecord({ ...BASE, transparentRef: evil }), BrowserPersistenceError);
+  // a keyword-bearing segment is rejected too
+  assert.throws(() => guardTransparentRef('transparentRef', 'daemon:cookie:session:run'), BrowserPersistenceError);
+  // a clean transparent ref still passes
+  assert.equal(
+    guardTransparentRef('transparentRef', 'daemon:daemon_local_1:session:run_1'),
+    'daemon:daemon_local_1:session:run_1',
+  );
+});
+
+// The `daemon:` namespace must ALWAYS validate as the transparent form. The
+// isOpaqueBrowserRef early-return allowed colons, so colon-smuggled parts and
+// extra tail segments bypassed validation entirely.
+test('guardTransparentRef rejects colon-smuggled / extra-segment transparent refs', () => {
+  for (const bad of [
+    'daemon:a:b:session:run', // daemonId "a:b" carries a colon
+    'daemon:daemon_local_1:session:run_1:extra', // extra tail segment
+    'daemon:a:session:b:session:c', // doubled session segment
+    'daemon:foo', // daemon: prefix but not the transparent form
+    'daemon::session:run', // empty daemonId
+    'daemon:d:session:', // empty runId
+  ]) {
+    assert.throws(() => guardTransparentRef('transparentRef', bad), BrowserPersistenceError, `expected "${bad}" rejected`);
+    assert.throws(
+      () => toPersistableSessionRecord({ ...BASE, transparentRef: bad }),
+      BrowserPersistenceError,
+      `expected persist of "${bad}" rejected`,
+    );
+  }
+  // a clean single-token daemonId is still accepted
+  assert.equal(guardTransparentRef('transparentRef', 'daemon:ws:session:run_1'), 'daemon:ws:session:run_1');
+});
+
+// A non-web scheme is a raw endpoint/path, not a page preview — drop it rather
+// than persist it with only the query stripped.
+test('sanitizeUrlPreview drops non-http(s) schemes and never persists them', () => {
+  assert.equal(sanitizeUrlPreview('ws://127.0.0.1:9222/devtools/browser/RAW'), undefined);
+  assert.equal(sanitizeUrlPreview('wss://127.0.0.1:9222/devtools/page/ABC?token=SECRET'), undefined);
+  assert.equal(sanitizeUrlPreview('chrome://version'), undefined);
+  assert.equal(sanitizeUrlPreview('devtools://devtools/page/RAW'), undefined);
+  // http(s) previews are kept (query/fragment/userinfo stripped)
+  assert.equal(sanitizeUrlPreview('https://u:p@example.com/a?token=SECRET#f'), 'https://example.com/a');
+  // ...and a ws:// targetUrlPreview is dropped on persist, not stored
+  const rec = toPersistableSessionRecord({ ...BASE, targetUrlPreview: 'ws://127.0.0.1:9222/devtools/browser/RAW' });
+  assert.equal(rec.targetUrlPreview, undefined);
 });

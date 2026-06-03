@@ -86,24 +86,50 @@ export function guardRefPart(field: string, value: string): string {
 
 /**
  * REJECT-on-mismatch: the transparent ref is permitted to *be* the transparent
- * form (that is its whole purpose), but must still be free of secrets/paths.
+ * form `daemon:<daemonId>:session:<runId>`, but each part must be a colon-free
+ * safe ref part.
+ *
+ * Anything in the `daemon:` namespace is ALWAYS validated as the transparent form
+ * — it must NOT short-circuit on `isOpaqueBrowserRef`, which permits colons. That
+ * short-circuit (added in an earlier round to let the ws:// case fall through to
+ * segment checks) let colon-smuggled/extra-segment refs bypass validation
+ * entirely: `daemon:a:b:session:run` (daemonId `a:b`), `daemon:…:session:run:extra`
+ * (tail), `daemon:ws://…/devtools/…:session:run`. `[^:]+` forbids extra `:`
+ * segments structurally; `isSafeBrowserRefPart` adds the opaque / no-`/` /
+ * no-keyword / no-whitespace checks. Only a NON-`daemon:` value may use the plain
+ * opaque-ref fallback.
  */
 export function guardTransparentRef(field: string, value: string): string {
-  if (!isOpaqueBrowserRef(value) && !/^daemon:[^\s]+:session:[^\s]+$/i.test(value)) {
-    throw new BrowserPersistenceError(field, 'must be a clean transparent session ref or opaque ref');
+  if (/^daemon:/i.test(value)) {
+    const match = /^daemon:([^:]+):session:([^:]+)$/i.exec(value);
+    if (match && isSafeBrowserRefPart(match[1]) && isSafeBrowserRefPart(match[2])) {
+      return value;
+    }
+    throw new BrowserPersistenceError(
+      field,
+      'must be a clean transparent session ref: daemon:<part>:session:<part> with colon-free opaque parts',
+    );
   }
-  return value;
+  if (isOpaqueBrowserRef(value)) return value;
+  throw new BrowserPersistenceError(field, 'must be a clean transparent session ref or opaque ref');
 }
 
 /**
  * SANITIZE: a URL *preview*. Query, fragment, and userinfo are stripped so a
- * secret in the URL is never persisted. Relative/non-URL strings are truncated
+ * secret in the URL is never persisted. Only http/https previews are kept: a
+ * non-web scheme (`ws`/`wss`/`chrome`/`devtools`/`file`/`data`/…) is not a page URL
+ * but a raw endpoint/path (a CDP debugger socket, a profile/file path) that must
+ * not land in a checkpoint, so it is dropped (returns `undefined`) rather than
+ * persisted with only its query stripped. Relative/non-URL strings are truncated
  * at the first query/fragment delimiter.
  */
 export function sanitizeUrlPreview(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   try {
     const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return undefined;
+    }
     parsed.search = '';
     parsed.hash = '';
     parsed.username = '';

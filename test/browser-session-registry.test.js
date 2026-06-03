@@ -218,3 +218,30 @@ test('registry strips query secrets from targetUrlPreview on register and update
   assert.equal(updated.targetUrlPreview, 'https://example.com/next');
   assert.equal(JSON.stringify(registry.get('session:opaque-007')).includes('ANOTHERSECRET'), false);
 });
+
+// update() on a lookup miss must not echo a caller-supplied UNSAFE sessionId (a
+// raw ws:// debugger URL + token) back in the error — same no-echo rule as the
+// page target controller's incoming refs.
+test('update() does not echo an unsafe sessionId on a lookup miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  const unsafe = 'ws://127.0.0.1:9222/devtools/browser/RAW?token=SECRET';
+  assert.throws(
+    () => registry.update({ sessionId: unsafe, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('SECRET'), false);
+      assert.equal(err.message.includes('ws://'), false);
+      assert.equal(err.message.includes('devtools'), false);
+      assert.match(err.message, /not found/);
+      return true;
+    },
+  );
+});
+
+// ...but a safe-but-unknown surrogate is still named, so real misses stay debuggable.
+test('update() still names a safe-but-unknown surrogate on a miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  assert.throws(
+    () => registry.update({ sessionId: 'session:does-not-exist', pageTargetRef: 'page:x' }),
+    /session:does-not-exist not found/,
+  );
+});

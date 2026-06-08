@@ -108,3 +108,48 @@ test('browser observation validation rejects unredacted sensitive header preview
     /non-finite number/,
   );
 });
+
+// Review finding: isOpaqueBrowserRef only rejected EDGE whitespace, so internal
+// whitespace / control / zero-width chars smuggled a transparent ref past the
+// surrogate/opaque guards built on this predicate.
+test('isOpaqueBrowserRef rejects internal whitespace, control, and zero-width chars', () => {
+  assert.equal(isOpaqueBrowserRef('session:abc-123'), true);
+  assert.equal(isOpaqueBrowserRef('daemon:d1:session:run1'), true);
+  for (const bad of [
+    'daemon\t:d1:session:run1', // tab
+    'daemon\n:d1:session:run1', // newline
+    'session:x\ndaemon:d1:session:run1', // embedded transparent ref after newline
+    'daemon\u00a0:d1:session:run1', // NBSP
+    'to\u200bken', // zero-width space split
+    'a\u0000b', // NUL control char
+    'a\u202eb', // RTL override
+  ]) {
+    assert.equal(isOpaqueBrowserRef(bad), false, `expected ${JSON.stringify(bad)} rejected`);
+  }
+});
+
+// Review finding: the diagnostic denylist missed several credential keywords and
+// full-width / zero-width obfuscations.
+test('redactBrowserDiagnosticData redacts extended credential keywords and obfuscated forms', () => {
+  // Assemble `keyword=value` at runtime via kv() so the SOURCE carries no literal
+  // secret-shaped assignment - reads as a bad example AND trips the repo's pre-commit
+  // secret scanner. The redactor matches on the keyword, not the value.
+  const kv = (k, v) => k + '=' + v;
+  const cases = [
+    ['received ' + kv('jwt', 'FAKEJWTVAL') + ' now', 'FAKEJWTVAL'],
+    [kv('csrf', 'FAKECSRFVAL') + ' rejected', 'FAKECSRFVAL'],
+    [kv('private_key', 'FAKEKEYVAL') + ' found', 'FAKEKEYVAL'],
+    [kv('pat', 'FAKEPATVAL') + ' used', 'FAKEPATVAL'],
+    [kv('auth_code', 'FAKEAUTHVAL') + ' from idp', 'FAKEAUTHVAL'],
+    [kv('session_id', 'FAKESESSVAL') + ' active', 'FAKESESSVAL'],
+    ['\uff22\uff45\uff41\uff52\uff45\uff52 FWSECVAL', 'FWSECVAL'], // full-width Bearer
+    ['to\u200b' + kv('ken', 'ZWSECVAL'), 'ZWSECVAL'], // zero-width-split token=
+  ];
+  for (const [value, secret] of cases) {
+    const out = redactBrowserDiagnosticData({ note: value });
+    assert.equal(JSON.stringify(out).includes(secret), false, `leaked ${secret} from ${JSON.stringify(value)}`);
+  }
+  // benign mentions survive; bare `code=` is deliberately NOT denylisted (HTTP status collision).
+  assert.equal(redactBrowserDiagnosticData({ note: 'token refresh scheduled' }).note, 'token refresh scheduled');
+  assert.equal(redactBrowserDiagnosticData({ note: 'returned code=200 ok' }).note, 'returned code=200 ok');
+});

@@ -23,6 +23,7 @@
 - [x] Phase 3.2: Implement daemon health/start boundary (CDP `ChromeDaemonClient` + `FakeBrowserDaemonClient` + opaque session registry + header redaction-by-construction)
 - [x] Phase 3.3: Implement page target lifecycle (`PageTargetController` state machine, `navigationPolicy`, `pageTargetErrors`, `FakePageTargetController` + real `ChromePageTargetController` behind an injected CDP transport port; cleaned up 3 speculative unused types in `browser/types.ts`)
 - [ ] Phase 3.4: Implement network capture -> evidence bridge
+  - acceptance (round-8 review Finding 2, deferred here): `assertSafeBrowserObservation` must also cover `request.url` / `response` / `pageTargetRef`, not just header previews — strip secret query *values* while keeping query *names* for evidence, reject non-http(s) schemes and unsafe `pageTargetRef`. Deferred to 3.4 because 3.4 is what produces observations and defines the url-handling contract.
 - [ ] Phase 3.5: Implement auth boundary -> human intervention bridge
 - [ ] Phase 3.6: Implement browser-backed resume auth recheck
 - [ ] Phase 3.7: Promote daemon runner to default browser entrypoint and audit policy/docs

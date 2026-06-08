@@ -41,7 +41,7 @@ const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+/gi;
  * scheduled"`, `"authorization endpoint"`) does NOT match and is kept.
  */
 const CREDENTIAL_ASSIGNMENT_PATTERN =
-  /\b(?:authorization|password|passwd|pwd|secret|client[-_]?secret|access[-_]?token|refresh[-_]?token|id[-_]?token|token|api[-_]?key|apikey|x-api-key|otp|mfa|signature|sig|cookie|set-cookie)\b\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
+  /\b(?:authorization|password|passwd|pwd|secret|client[-_]?secret|private[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|jwt|api[-_]?key|apikey|x-api-key|pat|otp|mfa|signature|sig|csrf|xsrf|auth[-_]?code|session[-_]?id|cookie|set-cookie)\b\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
 
 /**
  * Strip secrets from a free-form diagnostic string. URLs are handled precisely
@@ -56,7 +56,11 @@ function sanitizeStringForDiagnostics(value: string): string {
   if (out === value && !/\s/.test(out) && /[?#]/.test(out)) {
     out = out.split(/[?#]/, 1)[0] || out;
   }
-  if (CREDENTIAL_ASSIGNMENT_PATTERN.test(out)) {
+  // Fold full-width / compatibility forms to ASCII and drop zero-width chars for the
+  // denylist check ONLY, so `Ｂｅａｒｅｒ X` and `to{ZWSP}ken=X` can't dodge it. The value
+  // returned is the original `out`; this normalized view only decides whether to redact.
+  const denylistView = out.normalize('NFKC').replace(/[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g, '');
+  if (CREDENTIAL_ASSIGNMENT_PATTERN.test(denylistView)) {
     return REDACTED;
   }
   return out;

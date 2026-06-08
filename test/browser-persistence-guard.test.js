@@ -156,3 +156,22 @@ test('sanitizeUrlPreview drops non-http(s) schemes and never persists them', () 
   const rec = toPersistableSessionRecord({ ...BASE, targetUrlPreview: 'ws://127.0.0.1:9222/devtools/browser/RAW' });
   assert.equal(rec.targetUrlPreview, undefined);
 });
+
+// Review finding: a surrogate sessionId could smuggle a transparent ref past the
+// anti-linkability check using INTERNAL whitespace/zero-width chars (the start-
+// anchored daemon: check + edge-only trim let it through). Now rejected at the root.
+test('guardSurrogateSessionId rejects whitespace / zero-width-smuggled surrogates', () => {
+  for (const bad of [
+    'daemon\t:d1:session:run1',
+    'session:x\ndaemon:d1:session:run1',
+    'sess\u200bion:abc',
+    'session\u00a0abc',
+  ]) {
+    assert.throws(
+      () => guardSurrogateSessionId('sessionId', bad),
+      BrowserPersistenceError,
+      `expected ${JSON.stringify(bad)} rejected`,
+    );
+  }
+  assert.equal(guardSurrogateSessionId('sessionId', 'session:clean-1'), 'session:clean-1');
+});

@@ -4,14 +4,19 @@ import type { BrowserSessionRefParts } from './types';
 const BROWSER_REF_UNSAFE_PATTERN =
   /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|\b(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/)\b)/i;
 
+// Whitespace (the `\s` class, incl. NBSP and line breaks), C0/C1 control chars,
+// and zero-width / bidi format chars. `\ufeff` (BOM/ZWNBSP) is already part of `\s`.
+const REF_FORBIDDEN_CHAR_PATTERN = /[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060]/;
+
 export function isOpaqueBrowserRef(value: string): boolean {
-  // Canonical only. The old check trimmed for the length test but matched the
-  // unsafe pattern on the raw value, so `" page:x "` validated as opaque while the
-  // *untrimmed* value was what got minted, persisted, and used as a map key —
-  // a validate-trimmed / store-untrimmed mismatch (a padded ref became an
-  // unreachable target). Surrounding whitespace in an opaque machine ref is always
-  // a bug, so reject it outright rather than silently tolerate it.
-  return value.length > 0 && value === value.trim() && !BROWSER_REF_UNSAFE_PATTERN.test(value);
+  // Reject empty, ANY whitespace (internal or edge), control chars, and zero-width/
+  // bidi format chars. The old check only compared `value === value.trim()`, which
+  // catches EDGE whitespace only — so `daemon\t:d:session:r`, a newline-embedded
+  // transparent ref, or a zero-width-split token slipped past every guard built on
+  // this predicate (isOpaqueSurrogateSessionId, guardOpaqueRef, isSafeBrowserRefPart).
+  if (value.length === 0) return false;
+  if (REF_FORBIDDEN_CHAR_PATTERN.test(value)) return false;
+  return !BROWSER_REF_UNSAFE_PATTERN.test(value);
 }
 
 /**

@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **184 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **188 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -304,7 +304,18 @@ denylist (`session:javascript:alert(…)` echoed) -> added to `BROWSER_REF_UNSAF
 `CREDENTIAL_ASSIGNMENT_PATTERN` now alnum-bounds all keywords; (5) URLs after
 punctuation/quote/bracket (`(/oauth?code=`, `{"next":"/sso?…"`) escaped the
 whitespace-anchored `RISKY_DIAGNOSTIC_PATTERN` -> it now uses `(?<![a-z0-9])` boundaries.
-Tests: 184 pass / 0 fail.
+
+**A SIXTH codex re-review refined the round-5 fixes (five findings):** (1) the CDP-endpoint
+regex ignored the host and wrongly redacted a PUBLIC `/json/version` -> scoped to a LOOPBACK
+host (`isLoopbackHost`, exported from `daemonClient`) so public `/json|/devtools` URLs are
+kept; (2) the opaque-scheme diagnostic check was raw-only (a zero-width char in the scheme
+name dodged it) -> it now folds via `foldForDenylist` first; (3) the ref denylist enumerated
+only a few opaque schemes -> a GENERIC `<scheme>:<non-slash>` detector (excluding the ref
+prefixes `session:`/`page:`/`daemon:` AND the structural `X:session`/`X:page`/`X:daemon`
+colon, so a transparent ref stays opaque); (4) the CDP path was matched raw (`%64evtools`
+bypassed) -> a `safeDecodePath` percent-decodes (a few rounds) before matching; (5) encoded
+query/fragment delimiters (`%3F`/`%23`) survived -> the preview split + invariant now reject
+`%3b`/`%26`/`%3f`/`%23`. Tests: 188 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

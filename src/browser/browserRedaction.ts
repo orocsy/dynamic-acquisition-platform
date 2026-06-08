@@ -61,13 +61,16 @@ const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?<![a-z0-9])\/\/[^\s"'<>]|(?<![a-z0-9])
  * the right trade. A bare path and plain prose are kept.
  */
 function sanitizeStringForDiagnostics(value: string): string {
-  if (RISKY_DIAGNOSTIC_PATTERN.test(value) || OPAQUE_URL_SCHEME_PATTERN.test(value)) {
-    return REDACTED;
-  }
-  // A credential assignment / auth-scheme value in prose, folded to defeat full-width /
-  // combining-mark smuggling -> redact wholesale; see CREDENTIAL_ASSIGNMENT_PATTERN.
-  const denylistView = foldForDenylist(value);
-  if (CREDENTIAL_ASSIGNMENT_PATTERN.test(denylistView)) {
+  // Fold (NFKD + strip invisible/format/mark chars) so a zero-width / compatibility char
+  // in a scheme name (`java<ZWJ>script:`) or a keyword cannot dodge any check below.
+  const folded = foldForDenylist(value);
+  if (
+    RISKY_DIAGNOSTIC_PATTERN.test(value) ||
+    RISKY_DIAGNOSTIC_PATTERN.test(folded) ||
+    OPAQUE_URL_SCHEME_PATTERN.test(value) ||
+    OPAQUE_URL_SCHEME_PATTERN.test(folded) ||
+    CREDENTIAL_ASSIGNMENT_PATTERN.test(folded)
+  ) {
     return REDACTED;
   }
   return value;

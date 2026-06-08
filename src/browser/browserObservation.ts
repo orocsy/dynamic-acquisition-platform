@@ -1,5 +1,6 @@
 import type { BrowserObservationId, PageTargetRef } from './types';
 import { isPageTargetRef } from './browserRef';
+import { isLoopbackHost } from './daemonClient';
 
 export type BrowserObservationSource = 'cdp' | 'playwright' | 'daemon-fixture';
 
@@ -54,13 +55,34 @@ const SENSITIVE_HEADER_PATTERN = /(?:authorization|cookie|set-cookie|api[-_]?key
 // invariant so both enforce one policy.
 const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@/?#;&\s\x5c\x00-\x1f]+(?:\/[^?#;&\s\x5c\x00-\x1f]*)?$/i;
 const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
-// A CDP/devtools debugger endpoint (`/devtools/...`, `/json/...`) over http(s) is a raw
-// browser-control handle / target id, not a page; reject it even though its shape is clean.
-const CDP_ENDPOINT_URL = /^(?:https?:\/\/[^/]+)?\/(?:devtools\/|json(?:\/(?:version|list|protocol|new|activate|close)\b|\/?$))/i;
+// A CDP/devtools debugger endpoint on a LOOPBACK (daemon) host, even over http(s), is a raw
+// browser-control handle / target id, not a page -- reject it. A public `/json/...` URL (not
+// loopback) and a relative `/devtools` path (relative to a public page host) are NOT CDP.
+const CDP_ENDPOINT_PATH = /^\/(?:devtools|json)(?:\/|$)/i;
+const CDP_LOOPBACK_URL = /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)(?::\d+)?\/(?:devtools|json)(?:\/|$)/i;
+
+// Percent-decode (a few rounds, for double-encoding) so an encoded debugger path / delimiter
+// (`%64evtools`, `%2F`, `%3B`) is canonicalized before matching. Never throws.
+function safeDecodePath(path: string): string {
+  let out = path;
+  for (let i = 0; i < 3; i += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(out);
+    } catch {
+      return out;
+    }
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
 function isSanitizedUrlField(value: string): boolean {
-  // Reject a CDP endpoint and a percent-encoded path parameter (`%3B`=`;`, `%26`=`&`) that
-  // construction would drop, so a prebuilt observation can't smuggle either past the gate.
-  if (CDP_ENDPOINT_URL.test(value) || /%3b|%26/i.test(value)) return false;
+  // Reject a loopback CDP endpoint (decoded, to defeat `%64evtools`) and any percent-encoded
+  // query/fragment/param delimiter (`%3B`/`%26`/`%3F`/`%23`) construction would drop, so a
+  // prebuilt observation can't smuggle either past the gate.
+  if (CDP_LOOPBACK_URL.test(safeDecodePath(value)) || /%3b|%26|%3f|%23/i.test(value)) return false;
   return CLEAN_ABSOLUTE_URL.test(value) || CLEAN_RELATIVE_PATH.test(value);
 }
 
@@ -111,9 +133,10 @@ function sanitizeHeaderUrlValue(value: string): string {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return REDACTED;
     }
-    // Drop a CDP/devtools debugger endpoint even over http(s) (its path/target id is a
-    // raw browser-control handle, not a page).
-    if (CDP_ENDPOINT_URL.test(parsed.pathname)) {
+    // Drop a CDP/devtools debugger endpoint on a LOOPBACK (daemon) host even over http(s)
+    // (its path/target id is a raw browser-control handle, not a page); decode first so
+    // `%64evtools`/`%2F` cannot smuggle it.
+    if (isLoopbackHost(parsed.hostname) && CDP_ENDPOINT_PATH.test(safeDecodePath(parsed.pathname))) {
       return REDACTED;
     }
     parsed.search = '';
@@ -124,7 +147,7 @@ function sanitizeHeaderUrlValue(value: string): string {
     }
     // Drop RFC-3986 path parameters too (`;jsessionid=…`, stray `&…`) — they sit in
     // pathname, not search, so a session id in a redirect Location would survive.
-    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26/i)[0];
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23/i)[0];
     return parsed.toString();
   } catch {
     // Keep ONLY a clean relative path; drop scheme-relative or whitespace/tab/control/

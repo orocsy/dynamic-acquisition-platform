@@ -366,3 +366,21 @@ test('header sanitizer + invariant drop http(s) CDP endpoints and percent-encode
     assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://api.example.com/json/users', method: 'GET' } }),
   );
 });
+
+// Codex re-review (round 6) #1/#4/#5: the invariant scopes the CDP rejection to a LOOPBACK
+// host (a public /json/version is accepted), decodes the path (%64evtools rejected), and
+// rejects encoded query/fragment delimiters (%3F/%23).
+test('invariant scopes CDP rejection to loopback, decodes, and rejects encoded delimiters', () => {
+  const acc = (url) => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } });
+  // public CDP-looking URLs are accepted
+  for (const url of ['https://api.example.com/json/version', 'https://cdn.example.com/devtools/guide'])
+    assert.doesNotThrow(() => acc(url), `expected ${url} accepted`);
+  // loopback CDP (incl. percent-encoded) and encoded query delimiters are rejected
+  for (const url of [
+    'http://127.0.0.1:9222/json/version',
+    'http://127.0.0.1:9222/%64evtools/browser/RAW',
+    'https://app.example.com/callback%3Fcode=RAWCODE',
+    'https://app.example.com/cb%23access_token=RAWT',
+  ])
+    assert.throws(() => acc(url), /request\.url must be/, `expected ${url} rejected`);
+});

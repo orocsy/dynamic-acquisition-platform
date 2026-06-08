@@ -529,3 +529,25 @@ test('isOpaqueBrowserRef rejects opaque (slash-less) URL schemes in refs', () =>
   assert.equal(isOpaqueBrowserRef('session:metadata-1'), true);
   assert.equal(isOpaqueBrowserRef('session:opaque-001'), true);
 });
+
+// Codex re-review (round 6) #3: the ref denylist enumerated only a few opaque schemes;
+// it now detects ANY `<scheme>:<non-slash>` (s3:/ssh:/tel:/...), while keeping the
+// transparent `daemon:<part>:session:<part>` form opaque (X:session is a ref delimiter,
+// not a URL scheme).
+test('isOpaqueBrowserRef rejects arbitrary opaque URL schemes but keeps transparent refs', () => {
+  for (const r of ['session:s3:private-bucket:cb', 'session:ssh:host:path', 'session:tel:+15551234', 'session:gopher:x'])
+    assert.equal(isOpaqueBrowserRef(r), false, r);
+  for (const r of ['daemon:d1:session:run1', 'daemon:daemon_local_001:session:run_browser_001', 'session:uuid-1', 'page:target-001'])
+    assert.equal(isOpaqueBrowserRef(r), true, r);
+});
+
+// Codex re-review #2: the opaque-scheme diagnostic check was raw-only, so a zero-width /
+// compatibility char in the scheme name (`java<ZWJ>script:`) dodged it. It now folds first.
+test('redactBrowserDiagnosticData redacts opaque schemes smuggled with a zero-width char', () => {
+  const C = (n) => String.fromCodePoint(n);
+  for (const cp of [0x200d, 0x200b, 0x00ad, 0x061c]) {
+    const note = 'x java' + C(cp) + 'script:alert(RAWSEC' + cp.toString(16) + ') y';
+    assert.equal(redactBrowserDiagnosticData({ note }).note, '[redacted]', `U+${cp.toString(16)}`);
+  }
+  assert.equal(redactBrowserDiagnosticData({ note: 'da' + C(0x200b) + 'ta:text/html,RAWX' }).note, '[redacted]');
+});

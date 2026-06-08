@@ -1,4 +1,5 @@
 import { isOpaqueBrowserRef, isOpaqueSurrogateSessionId, isPageTargetRef, isSafeBrowserRefPart } from './browserRef';
+import { isLoopbackHost } from './daemonClient';
 import type { BrowserDaemonMode } from './types';
 
 /**
@@ -124,7 +125,26 @@ export function guardTransparentRef(field: string, value: string): string {
  * (`;jsessionid=…`) are removed; relative/non-URL strings are truncated at the first
  * query/fragment/path-parameter delimiter.
  */
-const CDP_ENDPOINT_URL = /^(?:https?:\/\/[^/]+)?\/(?:devtools\/|json(?:\/(?:version|list|protocol|new|activate|close)\b|\/?$))/i;
+// A CDP/devtools debugger HTTP endpoint path (`/devtools/<...>`, `/json...`). Gated by a
+// loopback host at the call site, so a public `/json/version` API URL is unaffected.
+const CDP_ENDPOINT_PATH = /^\/(?:devtools|json)(?:\/|$)/i;
+
+// Percent-decode (a few rounds, for double-encoding) so an encoded debugger path or
+// delimiter (`%64evtools`, `%2F`, `%3B`) is canonicalized before matching. Never throws.
+function safeDecodePath(path: string): string {
+  let out = path;
+  for (let i = 0; i < 3; i += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(out);
+    } catch {
+      return out;
+    }
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
 
 export function sanitizeUrlPreview(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -133,21 +153,22 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return undefined;
     }
-    // Drop a CDP/devtools debugger endpoint even over http(s): `/devtools/browser/<id>`,
-    // `/devtools/page/<id>`, `/json/version`, ... expose a raw browser-control socket and
-    // target id, not a page (ws/wss are already dropped by the scheme gate above).
-    if (CDP_ENDPOINT_URL.test(parsed.pathname)) {
+    // Drop a CDP/devtools debugger endpoint on a LOOPBACK (daemon) host even over http(s):
+    // `/devtools/browser/<id>`, `/json/version`, ... expose a raw browser-control socket /
+    // target id, not a page. Decode the path first so `%64evtools`/`%2F` cannot smuggle it.
+    // A public `/json/...` URL is not loopback, so it is kept.
+    if (isLoopbackHost(parsed.hostname) && CDP_ENDPOINT_PATH.test(safeDecodePath(parsed.pathname))) {
       return undefined;
     }
     parsed.search = '';
     parsed.hash = '';
     parsed.username = '';
     parsed.password = '';
-    // Drop RFC-3986 path parameters too, INCLUDING percent-encoded delimiters (`%3B`=`;`,
-    // `%26`=`&`) a server decodes before reading them: they live in `pathname`, not
-    // `search`, so without this a `;jsessionid=`/`%3Bjsessionid=` redirect URL would
-    // persist a live session id in a checkpoint preview.
-    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26/i)[0];
+    // Strip RFC-3986 path parameters AND any percent-encoded query/fragment/param delimiter
+    // (`%3B`=`;`, `%26`=`&`, `%3F`=`?`, `%23`=`#`) a server decodes before reading: they live
+    // in `pathname`, not `search`, so a `;jsessionid=`/`%3Fcode=` redirect URL would
+    // otherwise persist a live session id or auth code in a checkpoint preview.
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23/i)[0];
     return parsed.toString();
   } catch {
     // Not an absolute URL. Keep ONLY a clean relative path (single leading slash,

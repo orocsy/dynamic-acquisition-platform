@@ -258,3 +258,23 @@ test('sanitizeUrlPreview drops http(s) CDP endpoints and percent-encoded path pa
   // a legit public /json/users API path is NOT a CDP endpoint -> kept
   assert.equal(sanitizeUrlPreview('https://api.example.com/json/users'), 'https://api.example.com/json/users');
 });
+
+// Codex re-review (round 6) #1/#4/#5: the CDP drop is scoped to a LOOPBACK host (so a
+// public /json/version is kept), the path is percent-decoded first (so %64evtools can't
+// smuggle a debugger endpoint), and encoded query/fragment delimiters (%3F/%23) are stripped.
+test('sanitizeUrlPreview scopes CDP drop to loopback, decodes the path, and strips encoded delimiters', () => {
+  // public CDP-looking paths are KEPT (not loopback)
+  assert.equal(sanitizeUrlPreview('https://api.example.com/json/version'), 'https://api.example.com/json/version');
+  assert.equal(sanitizeUrlPreview('https://cdn.example.com/devtools/guide'), 'https://cdn.example.com/devtools/guide');
+  // loopback CDP endpoints are dropped, including percent-encoded debugger paths
+  for (const u of [
+    'http://127.0.0.1:9222/devtools/browser/RAW',
+    'http://localhost:9222/json/version',
+    'http://127.0.0.1:9222/%64evtools/browser/RAW',
+    'http://127.0.0.1:9222/devtools%2Fbrowser%2FRAW',
+  ])
+    assert.equal(sanitizeUrlPreview(u), undefined, `expected dropped: ${u}`);
+  // encoded query/fragment delimiters are stripped, so the value never persists
+  assert.equal(sanitizeUrlPreview('https://app.example.com/callback%3Fcode=RAWCODE'), 'https://app.example.com/callback');
+  assert.equal(sanitizeUrlPreview('https://app.example.com/cb%23access_token=RAWT').includes('RAWT'), false);
+});

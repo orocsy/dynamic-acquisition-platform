@@ -82,7 +82,7 @@ export function daemonIdFromEndpoint(endpoint: string): string {
  * daemon, so a `local-chrome-daemon` ref must point at loopback. This also
  * prevents the health check from being pointed at an arbitrary remote host.
  */
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
   if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;

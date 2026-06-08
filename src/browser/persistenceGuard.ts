@@ -125,27 +125,6 @@ export function guardTransparentRef(field: string, value: string): string {
  * (`;jsessionid=…`) are removed; relative/non-URL strings are truncated at the first
  * query/fragment/path-parameter delimiter.
  */
-// A CDP/devtools debugger HTTP endpoint path (`/devtools/<...>`, `/json...`). Gated by a
-// loopback host at the call site, so a public `/json/version` API URL is unaffected.
-const CDP_ENDPOINT_PATH = /^\/(?:devtools|json)(?:\/|$)/i;
-
-// Percent-decode (a few rounds, for double-encoding) so an encoded debugger path or
-// delimiter (`%64evtools`, `%2F`, `%3B`) is canonicalized before matching. Never throws.
-function safeDecodePath(path: string): string {
-  let out = path;
-  for (let i = 0; i < 3; i += 1) {
-    let next: string;
-    try {
-      next = decodeURIComponent(out);
-    } catch {
-      return out;
-    }
-    if (next === out) break;
-    out = next;
-  }
-  return out;
-}
-
 export function sanitizeUrlPreview(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   try {
@@ -153,11 +132,11 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return undefined;
     }
-    // Drop a CDP/devtools debugger endpoint on a LOOPBACK (daemon) host even over http(s):
-    // `/devtools/browser/<id>`, `/json/version`, ... expose a raw browser-control socket /
-    // target id, not a page. Decode the path first so `%64evtools`/`%2F` cannot smuggle it.
-    // A public `/json/...` URL is not loopback, so it is kept.
-    if (isLoopbackHost(parsed.hostname) && CDP_ENDPOINT_PATH.test(safeDecodePath(parsed.pathname))) {
+    // A loopback host is the local daemon / a CDP debugger endpoint (`/devtools/...`,
+    // `/json/...`) / an SSRF target, never a public page -> drop it. `new URL` canonicalizes
+    // octal/decimal/IPv6 spellings (`0177.0.0.1`, `2130706433`, `[::1]`), so `isLoopbackHost`
+    // catches every encoding with no path regex or percent-decode to get wrong.
+    if (isLoopbackHost(parsed.hostname)) {
       return undefined;
     }
     parsed.search = '';
@@ -178,6 +157,9 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     // `<NUL>//host`, `<ZWSP>//host`) — all can carry a raw host:port endpoint and
     // are not explicit http(s) URLs. A `startsWith('//')` test misses every smuggled
     // variant, so allow-list the safe shape instead of deny-listing.
+    // A relative path with a percent-encoded query/fragment/param delimiter (`%3B`/`%26`/
+    // `%3F`/`%23`) would persist a secret a consumer decodes -> drop it.
+    if (/%(?:3[bf]|26|23)/i.test(value)) return undefined;
     const path = value.split(/[?#;&]/, 1)[0];
     return /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/.test(path) ? path : undefined;
   }

@@ -551,3 +551,18 @@ test('redactBrowserDiagnosticData redacts opaque schemes smuggled with a zero-wi
   }
   assert.equal(redactBrowserDiagnosticData({ note: 'da' + C(0x200b) + 'ta:text/html,RAWX' }).note, '[redacted]');
 });
+
+// Codex re-review (round 7) #4: a relative URL with a PERCENT-ENCODED query/fragment/param
+// delimiter (`%3F`/`%23`/`%3B`/`%26`) in prose had no scheme and no raw delimiter, so the
+// risky-URL detector missed it; it now matches encoded delimiters too.
+test('redactBrowserDiagnosticData redacts a relative URL with an encoded delimiter in prose', () => {
+  for (const note of [
+    'redirected to /oauth2/callback%3Fcode=RAWCODE then back',
+    'x /cb%23id_token=RAWTOK y',
+    '/account%3Bjsessionid=RAWSID',
+    'see /q%26secret=RAWVAL now',
+  ])
+    assert.equal(redactBrowserDiagnosticData({ note }).note, '[redacted]', note);
+  // a benign `%20` (space) and a bare path are kept
+  assert.equal(redactBrowserDiagnosticData({ note: 'file name%20test and /api/users ok' }).note, 'file name%20test and /api/users ok');
+});

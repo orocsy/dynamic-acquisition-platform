@@ -384,3 +384,14 @@ test('invariant scopes CDP rejection to loopback, decodes, and rejects encoded d
   ])
     assert.throws(() => acc(url), /request\.url must be/, `expected ${url} rejected`);
 });
+
+// Codex re-review (round 7): the invariant parses the value (not a raw regex), so octal/
+// decimal/IPv6 loopback host spellings (canonicalized by new URL) are rejected; a relative
+// URL with an encoded delimiter is rejected; a clean public URL is accepted.
+test('invariant rejects every loopback host spelling and encoded-delimiter relative URL', () => {
+  const acc = (url) => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } });
+  for (const url of ['http://0177.0.0.1:9222/devtools/browser/RAW', 'http://2130706433:9222/json/version', 'http://[::1]:9222/x', '/oauth2/callback%3Fcode=RAWCODE'])
+    assert.throws(() => acc(url), /request\.url must be/, `expected ${url} rejected`);
+  for (const url of ['https://api.example.com/json/version', 'https://api.example.com/v1/users', '/v1/users'])
+    assert.doesNotThrow(() => acc(url), `expected ${url} accepted`);
+});

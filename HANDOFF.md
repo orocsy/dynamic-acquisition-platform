@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **188 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **191 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -316,6 +316,21 @@ colon, so a transparent ref stays opaque); (4) the CDP path was matched raw (`%6
 bypassed) -> a `safeDecodePath` percent-decodes (a few rounds) before matching; (5) encoded
 query/fragment delimiters (`%3F`/`%23`) survived -> the preview split + invariant now reject
 `%3b`/`%26`/`%3f`/`%23`. Tests: 188 pass / 0 fail.
+
+**A SEVENTH codex re-review found five MORE narrow URL-encoding/host-spelling edge cases
+(octal/decimal loopback `0177.0.0.1`/`2130706433`, malformed `%ZZ` escapes, encoded `%3F`
+in relative paths), so the URL-preview sanitizers were REDESIGNED to converge by
+construction (operator-authorized), mirroring the diagnostic redesign:** the fragile
+CDP-path regex + percent-decoder were DELETED. Instead `sanitizeUrlPreview` /
+`sanitizeHeaderUrlValue` / the `isSanitizedUrlField` invariant now (a) reject ANY loopback
+host outright -- a loopback URL is the local daemon / a CDP debugger endpoint / an SSRF
+target, never a public page, and `new URL` canonicalizes every host spelling
+(octal/decimal/IPv6) so `isLoopbackHost(parsed.hostname)` catches them all with no path
+regex or decode to get wrong; and (b) reject any percent-encoded query/fragment/param
+delimiter (`%3B`/`%26`/`%3F`/`%23`). The invariant now PARSES the value (not a raw host
+regex) to get the canonicalized host. The diagnostic `RISKY_DIAGNOSTIC_PATTERN` also gained
+the encoded-delimiter forms. This removes the host-spelling / percent-decode edge-case
+surface entirely. Tests: 191 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

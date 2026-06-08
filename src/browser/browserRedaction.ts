@@ -48,7 +48,7 @@ function foldForDenylist(value: string): string {
  * query, fragment, or matrix/path parameter -- the parts a secret rides in). A bare path
  * with no delimiter (a route like `/api/users`) and plain prose are NOT risky.
  */
-const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?<![a-z0-9])\/\/[^\s"'<>]|(?<![a-z0-9])\/[^\s"'<>]*[?#;&]/i;
+const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?<![a-z0-9])\/\/[^\s"'<>]|(?<![a-z0-9])\/[^\s"'<>]*(?:[?#;&]|%3[bf]|%26|%23)/i;
 
 /**
  * Aggressive defense-in-depth for a free-form diagnostic string. Sanitizing a URL or

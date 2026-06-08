@@ -278,3 +278,24 @@ test('sanitizeUrlPreview scopes CDP drop to loopback, decodes the path, and stri
   assert.equal(sanitizeUrlPreview('https://app.example.com/callback%3Fcode=RAWCODE'), 'https://app.example.com/callback');
   assert.equal(sanitizeUrlPreview('https://app.example.com/cb%23access_token=RAWT').includes('RAWT'), false);
 });
+
+// Codex re-review (round 7): the loopback drop is now whole-host (any path), so octal/
+// decimal/IPv6 host spellings (canonicalized by new URL) and a malformed `%ZZ` escape on a
+// loopback path can't smuggle a debugger endpoint; an encoded delimiter in a relative path
+// is dropped too.
+test('sanitizeUrlPreview drops every loopback host spelling and encoded-delimiter relative path', () => {
+  for (const u of [
+    'http://0177.0.0.1:9222/devtools/browser/RAW',
+    'http://2130706433:9222/json/version',
+    'http://[::1]:9222/devtools/x',
+    'http://127.0.0.1:9222/%64evtools%ZZ/browser/RAW',
+    'http://localhost:9222/anything',
+  ])
+    assert.equal(sanitizeUrlPreview(u), undefined, `expected dropped: ${u}`);
+  // a relative path carrying an encoded query/fragment delimiter is dropped
+  assert.equal(sanitizeUrlPreview('/oauth2/callback%3Fcode=RAWCODE'), undefined);
+  assert.equal(sanitizeUrlPreview('/cb%23id_token=RAWT'), undefined);
+  // a clean public URL and a clean relative path are still kept
+  assert.equal(sanitizeUrlPreview('https://api.example.com/json/version'), 'https://api.example.com/json/version');
+  assert.equal(sanitizeUrlPreview('/account/dashboard'), '/account/dashboard');
+});

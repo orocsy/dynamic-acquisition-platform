@@ -362,3 +362,23 @@ test('redactBrowserDiagnosticData redacts a file:// local path', () => {
   // a normal http(s) URL is unaffected by the file:// rule
   assert.equal(redactBrowserDiagnosticData({ note: 'at https://app.test/home' }).note, 'at https://app.test/home');
 });
+
+// Codex re-review (P2): the substring keyword group rejected legit ids that merely
+// contain a keyword as the PREFIX of a longer word (run_tokenizer_eval, run_jwtable,
+// run_csrfDefense), which failed browser session registration for safe runs. Keywords
+// are now alnum-bounded, so a prefix-glued keyword is accepted while a separator-
+// delimited secret marker is still rejected.
+test('isOpaqueBrowserRef accepts legit ids whose keyword is a prefix of a longer word', () => {
+  for (const ok of [
+    'run_tokenizer_eval',
+    'run_jwtable',
+    'run_csrfDefense',
+    'daemon_secretary_1',
+    'run_signatures_index',
+    'run_credentialing_v2',
+  ])
+    assert.equal(isOpaqueBrowserRef(ok), true, `expected ${ok} accepted`);
+  // a separator-delimited secret marker is still rejected (security preserved)
+  for (const bad of ['run_token_DEADBEEF', 'session:access_token_ABCD', 'd-jwt-RAWVAL', 'x_csrf_RAWVAL'])
+    assert.equal(isOpaqueBrowserRef(bad), false, `expected ${bad} rejected`);
+});

@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **169 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **170 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -244,7 +244,12 @@ observation guard surface was re-swept by each independent probe. A SEVENTH inde
 pass returned CLEAN (no secret-leak — converged) and confirmed the URL-sanitizer class
 is closed by enumeration; one trivial in-intent follow-up was applied (PROFILE_LIKE now
 also redacts `file://` local paths in diagnostics, alongside `chrome://`/`ws://`/`devtools`).
-Tests: 169 pass / 0 fail.
+Codex re-review of the pushed commit then flagged a false-positive (the secret-keyword
+group was substring-matched, so legit ids like `run_tokenizer_eval`/`run_jwtable`/
+`run_csrfDefense` were rejected and failed session registration) -> the two keyword
+groups are merged into ONE alnum-bounded group: a keyword that is only a PREFIX of a
+longer word is accepted, a separator-delimited marker (`access_token_x`, `pat_`) is still
+rejected. Tests: 170 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

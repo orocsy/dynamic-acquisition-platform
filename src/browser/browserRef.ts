@@ -1,14 +1,14 @@
 import type { BrowserSessionRef } from '../runtime';
 import type { BrowserSessionRefParts } from './types';
 
-// Reject any ref embedding a secret, path, or endpoint. Two keyword groups: the
-// alnum-bounded group (lookarounds, NOT \b) treats `_`/`-`/`:` as separators so
-// `otp_SECRET`/`secret_x` are caught (a trailing `\b` missed them — `_` is a word
-// char); the substring group catches fragments dangerous anywhere. `pat` is gated
-// by a lookbehind so PAT markers (`pat_`, `github_pat_`) reject without eating
-// path/pattern/compat. URL schemes carry `//` (already caught by [\\/]).
+// Reject any ref embedding a secret, path, or endpoint. Secret keywords are matched
+// with alphanumeric boundaries (lookarounds): an adjacent _ - : or the string end is a
+// separator, so a delimited marker (otp_SECRET / access_token_x / pat_ / github_pat_)
+// is caught, while a keyword that is only a PREFIX of a longer word (tokenizer,
+// jwtable, csrfDefense, path, compatible) is NOT -- those are legitimate run/daemon/page
+// ids carrying no secret value. URL schemes carry slashes, already caught above.
 const BROWSER_REF_UNSAFE_PATTERN =
-  /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/|(?<![a-z0-9])(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools)(?![a-z0-9])|(?:token|jwt|credential|private[-_]?key|csrf|xsrf|(?<![a-z])pat[-_]|passwd|pwd|signature))/i;
+  /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/|(?<![a-z0-9])(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|passwd|pwd|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools|token|jwt|credential|private[-_]?key|csrf|xsrf|pat|signature)(?![a-z0-9]))/i;
 
 // Forbidden code points in any opaque ref: ALL whitespace (the \s class,
 // incl. NBSP and line breaks), ALL control chars (Unicode category Cc -- C0,

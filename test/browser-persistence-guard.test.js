@@ -176,12 +176,25 @@ test('guardSurrogateSessionId rejects whitespace / zero-width-smuggled surrogate
   assert.equal(guardSurrogateSessionId('sessionId', 'session:clean-1'), 'session:clean-1');
 });
 
-// Codex review (round 2): a scheme-relative `//host/...` carries a host:port that can
-// be a raw devtools endpoint, so it is DROPPED entirely (salvaging it kept the endpoint).
-test('sanitizeUrlPreview drops scheme-relative URLs (incl. devtools), keeps relative paths', () => {
-  assert.equal(sanitizeUrlPreview('//x:y@example.com/account?q=1'), undefined);
-  assert.equal(sanitizeUrlPreview('//127.0.0.1:9222/devtools/browser/RAW?q=1'), undefined);
-  assert.equal(sanitizeUrlPreview('/account?q=1'), '/account'); // relative path (no host) kept
-  const rec = toPersistableSessionRecord({ ...BASE, targetUrlPreview: '//127.0.0.1:9222/devtools/browser/RAW' });
-  assert.equal(rec.targetUrlPreview, undefined);
+// Review: a scheme-relative `//host` URL (a raw devtools endpoint) must be dropped —
+// including tab/control/whitespace/zero-width SMUGGLED variants a URL parser
+// normalizes back to `//host`. Only a clean relative path is kept.
+test('sanitizeUrlPreview drops scheme-relative + smuggled host URLs, keeps relative paths', () => {
+  const C = (n) => String.fromCharCode(n);
+  const endpoint = '127.0.0.1:9222/devtools/browser/RAW';
+  for (const v of [
+    '//' + endpoint, // plain scheme-relative
+    '//x:y@example.com/account', // userinfo
+    '/' + C(9) + '/' + endpoint, // tab between slashes
+    C(0) + '//' + endpoint, // leading NUL
+    C(0x200b) + '//' + endpoint, // leading zero-width space
+    ' //' + endpoint, // leading space
+  ]) {
+    assert.equal(sanitizeUrlPreview(v + '?q=1'), undefined, `expected dropped: ${JSON.stringify(v)}`);
+  }
+  assert.equal(sanitizeUrlPreview('/account?q=1'), '/account'); // clean relative path kept
+  assert.equal(
+    toPersistableSessionRecord({ ...BASE, targetUrlPreview: '/' + C(9) + '/' + endpoint }).targetUrlPreview,
+    undefined,
+  );
 });

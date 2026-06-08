@@ -173,13 +173,17 @@ test('a relative or http(s) Location still passes the invariant', () => {
 // Codex review: the invariant's scheme check only matched `scheme://`, so opaque
 // schemes (javascript:/data:/mailto:) and scheme-relative userinfo slipped past a
 // prebuilt observation. Construction drops them; the invariant must too.
-test('invariant rejects opaque non-http schemes and scheme-relative Locations', () => {
+test('invariant rejects opaque/non-http, scheme-relative, and smuggled Locations', () => {
+  const C = (n) => String.fromCharCode(n);
+  const dt = '127.0.0.1:9222/devtools/browser/RAW';
   for (const loc of [
     'javascript:alert(1)',
     'data:text/html,raw',
     'mailto:a@b.com',
     '//x:y@host/path',
-    '//127.0.0.1:9222/devtools/browser/RAW', // scheme-relative devtools endpoint
+    '//' + dt, // scheme-relative devtools endpoint
+    '/' + C(9) + '/' + dt, // tab-smuggled
+    C(0) + '//' + dt, // NUL-smuggled
   ]) {
     assert.throws(
       () =>
@@ -191,19 +195,23 @@ test('invariant rejects opaque non-http schemes and scheme-relative Locations', 
           response: { status: 302, headersPreview: { location: loc } },
         }),
       /must be redacted/,
-      `expected ${loc} rejected`,
+      `expected ${JSON.stringify(loc)} rejected`,
     );
   }
 });
 
-test('construction drops opaque-scheme and scheme-relative Locations', () => {
+test('construction drops opaque-scheme, scheme-relative, and smuggled Locations', () => {
+  const C = (n) => String.fromCharCode(n);
+  const dt = '127.0.0.1:9222/devtools/browser/RAW';
   for (const loc of [
     'javascript:alert(1)',
     'data:text/html,raw',
     'mailto:a@b.com',
     '//x:y@host/path?q=1',
-    '//127.0.0.1:9222/devtools/browser/RAW',
+    '//' + dt,
+    '/' + C(9) + '/' + dt, // tab-smuggled
+    C(0x200b) + '//' + dt, // zero-width-smuggled
   ]) {
-    assert.equal(toSafeHeaderPreview({ Location: loc }).location, '[redacted]');
+    assert.equal(toSafeHeaderPreview({ Location: loc }).location, '[redacted]', `expected redacted: ${JSON.stringify(loc)}`);
   }
 });

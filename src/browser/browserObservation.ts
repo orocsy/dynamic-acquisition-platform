@@ -101,11 +101,11 @@ function sanitizeHeaderUrlValue(value: string): string {
     }
     return parsed.toString();
   } catch {
-    // A scheme-relative `//host/...` carries a host:port (can be a raw
-    // `//127.0.0.1:9222/devtools/...` endpoint) and isn't explicit http(s) — drop it.
-    // A relative path (no host) is kept with its query stripped.
-    if (value.startsWith('//')) return REDACTED;
-    return value.split(/[?#]/, 1)[0] || REDACTED;
+    // Keep ONLY a clean relative path; drop scheme-relative or whitespace/tab/control/
+    // zero-width-smuggled host-bearing forms (a URL parser normalizes `/<tab>/host` to
+    // `//host`). A relative path has no host:port to leak. See sanitizeUrlPreview.
+    const path = value.split(/[?#]/, 1)[0];
+    return /^\/(?!\/)[\x21-\x7e]*$/.test(path) ? path : REDACTED;
   }
 }
 
@@ -183,16 +183,16 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
       // scheme must be http(s). An opaque scheme with no `//` (`javascript:`,
       // `data:`, `mailto:`) is rejected too — construction drops it; this catches a
       // prebuilt observation that bypassed construction.
-      const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(value);
-      const nonHttpScheme =
-        schemeMatch !== null &&
-        schemeMatch[1].toLowerCase() !== 'http' &&
-        schemeMatch[1].toLowerCase() !== 'https';
-      // Reject: query/fragment; a scheme-relative `//host/...` (carries a host:port
-      // that may be a raw endpoint, and is not explicit http(s)); absolute userinfo;
-      // or any explicit non-http(s) scheme (incl. opaque `javascript:`/`data:`).
-      const absoluteUserinfo = /^[a-z][a-z0-9+.-]*:\/\/[^/]*@/i.test(value);
-      if (/[?#]/.test(value) || value.startsWith('//') || absoluteUserinfo || nonHttpScheme) {
+      // A sanitized URL-bearing value must be EITHER a clean http(s) absolute URL (no
+      // userinfo/query/fragment/whitespace/control) OR a clean relative path (single
+      // leading slash, printable ASCII). Everything else is rejected: scheme-relative
+      // `//host`, a tab/control/zero-width-smuggled host, an opaque/non-http scheme
+      // (`javascript:`/`data:`/`ws:`), or userinfo — any of which can carry a raw
+      // endpoint or a secret. (Allow-list the safe shapes; deny-listing missed
+      // smuggled variants.)
+      const cleanAbsolute = /^https?:\/\/[^@?#\s\x00-\x1f]+$/i.test(value);
+      const cleanRelative = /^\/(?!\/)[\x21-\x7e]*$/.test(value);
+      if (!cleanAbsolute && !cleanRelative) {
         throw new Error(`browser observation header ${path}.${name} must be redacted`);
       }
       continue;

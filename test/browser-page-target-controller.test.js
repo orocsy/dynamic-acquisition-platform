@@ -543,3 +543,29 @@ test('ChromePageTargetController rolls back the reservation when the CDP create 
   assert.equal(ok.pageTargetRef, 'page:rb-2');
   assert.equal(ok.state, 'created');
 });
+
+// Review (C1): a concurrent closeTarget during the in-flight transport.createTarget
+// must not orphan the freshly-opened raw target or return a lying 'created' snapshot.
+test('ChromePageTargetController: close during createTarget closes the raw target, not orphans it', async () => {
+  let resolveCreate;
+  const closed = [];
+  const transport = {
+    createTarget: () => new Promise((res) => { resolveCreate = () => res({ rawTargetId: 'raw-racy' }); }),
+    navigate: async ({ url }) => ({ ok: true, status: 200, finalUrl: url }),
+    close: async ({ rawTargetId }) => { closed.push(rawTargetId); },
+  };
+  const controller = new ChromePageTargetController({ transport, pageTargetRefFactory: () => 'page:racy', clock: () => FIXED });
+  const createP = createOn(controller); // reserves page:racy, then awaits the pending transport create
+  await controller.closeTarget('page:racy'); // concurrent close while the create is in flight
+  resolveCreate(); // transport create resolves AFTER the close
+  const snap = await createP;
+  // the raw target opened during the race is closed — not orphaned
+  assert.deepEqual(closed, ['raw-racy']);
+  // and the returned snapshot reflects the real (closed) state, not a 'created' lie
+  assert.equal(snap.state, 'closed');
+  // navigate on the now-closed ref is rejected (no live raw mapping left behind)
+  await assert.rejects(
+    controller.navigate({ pageTargetRef: 'page:racy', url: 'https://x.com' }),
+    (e) => e.code === 'target-closed',
+  );
+});

@@ -136,12 +136,15 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     parsed.password = '';
     return parsed.toString();
   } catch {
-    // Not an absolute URL. A scheme-relative `//host/...` carries a host:port that
-    // can be a raw endpoint (a `//127.0.0.1:9222/devtools/...` debugger socket) and
-    // is NOT an explicit http(s) URL — drop it (salvaging it kept the endpoint). A
-    // relative path (`/path`, no host) is kept with its query stripped.
-    if (value.trim().startsWith('//')) return undefined;
-    return value.split(/[?#]/, 1)[0] || undefined;
+    // Not an absolute URL. Keep ONLY a clean relative path (single leading slash,
+    // printable ASCII, query stripped). Drop everything else: a scheme-relative
+    // `//host`, OR a whitespace/tab/control/zero-width-smuggled form that a URL
+    // parser normalizes to `//host` (e.g. `/<tab>/127.0.0.1:9222/devtools/...`,
+    // `<NUL>//host`, `<ZWSP>//host`) — all can carry a raw host:port endpoint and
+    // are not explicit http(s) URLs. A `startsWith('//')` test misses every smuggled
+    // variant, so allow-list the safe shape instead of deny-listing.
+    const path = value.split(/[?#]/, 1)[0];
+    return /^\/(?!\/)[\x21-\x7e]*$/.test(path) ? path : undefined;
   }
 }
 

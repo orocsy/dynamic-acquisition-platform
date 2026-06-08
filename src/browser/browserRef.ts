@@ -8,7 +8,7 @@ import type { BrowserSessionRefParts } from './types';
 // jwtable, csrfDefense, path, compatible) is NOT -- those are legitimate run/daemon/page
 // ids carrying no secret value. URL schemes carry slashes, already caught above.
 const BROWSER_REF_UNSAFE_PATTERN =
-  /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/|(?<![a-z0-9])(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|passwd|pwd|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools|token|jwt|credential|private[-_]?key|csrf|xsrf|pat|signature)(?![a-z0-9]))/i;
+  /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/|(?<![a-z0-9])(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|passwd|pwd|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools|token|jwt|credential|private[-_]?key|csrf|xsrf|pat|signature|auth[-_]?code|session[-_]?id)(?![a-z0-9]))/i;
 
 // Forbidden code points in any opaque ref: ALL whitespace (the \s class,
 // incl. NBSP and line breaks), ALL control chars (Unicode category Cc -- C0,

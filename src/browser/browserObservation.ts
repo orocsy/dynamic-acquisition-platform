@@ -52,7 +52,7 @@ const SENSITIVE_HEADER_PATTERN = /(?:authorization|cookie|set-cookie|api[-_]?key
 // leading slash, printable ASCII, no backslash — `/\\host` would smuggle a host that
 // `new URL` resolves via `\\`==`/`). Shared by the header check and the request.url
 // invariant so both enforce one policy.
-const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@?#;&\s\x5c\x00-\x1f]+$/i;
+const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@/?#;&\s\x5c\x00-\x1f]+(?:\/[^?#;&\s\x5c\x00-\x1f]*)?$/i;
 const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
 function isSanitizedUrlField(value: string): boolean {
   return CLEAN_ABSOLUTE_URL.test(value) || CLEAN_RELATIVE_PATH.test(value);

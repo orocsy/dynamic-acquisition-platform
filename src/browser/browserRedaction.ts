@@ -2,7 +2,7 @@ import { isOpaqueBrowserRef } from './browserRef';
 
 const REDACTED = '[redacted]';
 const SENSITIVE_KEY_PATTERN =
-  /(?:password|passwd|pwd|secret|authorization|cookie|set-cookie|api[-_]?key|token|mfa|otp|captcha|credential|session|profile|user-data-dir)/i;
+  /(?:password|passwd|pwd|secret|authorization|cookie|set-cookie|api[-_]?key|token|mfa|otp|captcha|credential|session|profile|user-data-dir|jwt|csrf|xsrf|signature|private[-_]?key|auth[-_]?code|bearer|client[-_]?secret|(?<![a-z0-9])pat(?![a-z0-9]))/i;
 const BROWSER_REF_KEY_PATTERN = /(?:browserSessionRef|pageTargetRef|browserDaemonRef|browserObservationId|daemonId|targetRef|ref)$/i;
 const PROFILE_LIKE_VALUE_PATTERN =
   /(?:^~\/|^[a-z]:[\\/]|^\/(?:Users|Applications|Volumes|private|tmp|var|Library)\b|[\\/](?:Library|Application Support|Google|Chrome|Chromium)[\\/]|user-data-dir|\bprofile\b|chrome:\/\/|devtools|ws:\/\/|wss:\/\/|file:\/\/)/i;
@@ -40,7 +40,7 @@ function sanitizeBrowserUrl(value: string): string {
  * (the old `looksLikeUrl` gate) left that query in place. Each match is run
  * through `sanitizeBrowserUrl`, which strips query, fragment, and userinfo.
  */
-const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+/gi;
+const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+|\b(?:data|javascript|vbscript|blob|filesystem|chrome-extension):[^\s"'<>]+/gi;
 
 /**
  * A credential *assignment* (`token=…`, `password: …`, `api_key=…`, …) or an auth
@@ -79,6 +79,10 @@ function foldForDenylist(value: string): string {
  */
 function sanitizeStringForDiagnostics(value: string): string {
   let out = value.replace(ABSOLUTE_URL_PATTERN, (match) => sanitizeBrowserUrl(match));
+  // Strip RFC-3986 path parameters (;jsessionid=..., stray &...) from ANY relative-path
+  // token, whole-string OR embedded in prose -- a relative ref has no scheme for the
+  // absolute-URL sanitizer, and jsessionid is not a credential-assignment keyword.
+  out = out.replace(/(\/[^\s;&?#"'<>]*)[;&][^\s"'<>]*/g, '$1');
   if (out === value && !/\s/.test(out)) {
     // a whole-string scheme-relative `//host/...` can be a raw endpoint -> redact it.
     // (ws/devtools/chrome are already wholesale-redacted upstream by PROFILE_LIKE.)

@@ -382,3 +382,54 @@ test('isOpaqueBrowserRef accepts legit ids whose keyword is a prefix of a longer
   for (const bad of ['run_token_DEADBEEF', 'session:access_token_ABCD', 'd-jwt-RAWVAL', 'x_csrf_RAWVAL'])
     assert.equal(isOpaqueBrowserRef(bad), false, `expected ${bad} rejected`);
 });
+
+// Codex re-review #5: the ref denylist omitted auth_code / session_id (which the value
+// side treats as credentials), so session:auth_code_ABCD passed isOpaqueSurrogateSessionId
+// and was echoed on a registry miss. Now rejected.
+test('isOpaqueBrowserRef rejects auth_code / session_id surrogate markers', () => {
+  for (const bad of ['session:auth_code_ABCD', 'session:session_id_ABCD', 'd-auth-code-1'])
+    assert.equal(isOpaqueBrowserRef(bad), false, `expected ${bad} rejected`);
+  // a normal session surrogate (no _id marker right after `session`) is still accepted
+  assert.equal(isOpaqueBrowserRef('session:uuid-1'), true);
+  assert.equal(isOpaqueBrowserRef('session:opaque-001'), true);
+});
+
+// Codex re-review #2: SENSITIVE_KEY_PATTERN drifted behind the credential names, so a
+// bare opaque secret under a jwt/pat/csrf/private_key/auth_code KEY leaked (no `=value`
+// for the value-side regex to catch). The key pattern is now in sync.
+test('redactBrowserDiagnosticData redacts a bare secret under an extended credential key', () => {
+  for (const k of ['jwt', 'pat', 'csrf', 'xsrf', 'private_key', 'auth_code', 'bearer', 'clientSecret', 'signature']) {
+    const out = redactBrowserDiagnosticData({ [k]: 'bareOpaqueSecretValue' });
+    assert.equal(out[k], '[redacted]', `expected key ${k} redacted`);
+  }
+  // collision-prone benign keys keep their value (pat is alnum-bounded)
+  for (const k of ['requestPath', 'updatePath', 'pattern', 'durationMs'])
+    assert.equal(redactBrowserDiagnosticData({ [k]: '/api/v2/users' })[k], '/api/v2/users', `expected key ${k} kept`);
+});
+
+// Codex re-review #3: sanitizeBrowserUrl's http(s)-only gate only saw scheme:// forms;
+// opaque schemes (data:/javascript:/chrome-extension:/blob:, no //) bypassed it in prose.
+// They are now matched and dropped.
+test('redactBrowserDiagnosticData drops opaque non-http URL schemes in prose', () => {
+  for (const [note, secret] of [
+    ['open data:text/html,RAWPAYLOAD now', 'RAWPAYLOAD'],
+    ['ran javascript:alert(RAWXSS) ok', 'RAWXSS'],
+    ['ext chrome-extension://abcdef/p.html done', 'abcdef'],
+    ['blob blob:https://o/RAWUUID end', 'RAWUUID'],
+  ])
+    assert.equal(redactBrowserDiagnosticData({ note }).note.includes(secret), false, `leaked ${secret} from ${JSON.stringify(note)}`);
+  // a benign `data:`/`metadata:` mention (no URL form — space or word-boundary) is kept
+  assert.equal(redactBrowserDiagnosticData({ note: 'the data: field shows metadata: x' }).note, 'the data: field shows metadata: x');
+});
+
+// Codex re-review #4: path-param stripping only ran for whole-string relative values; a
+// relative URL embedded in prose (with spaces) kept its ;jsessionid=. Now stripped globally.
+test('redactBrowserDiagnosticData strips path params from a relative URL embedded in prose', () => {
+  assert.equal(
+    redactBrowserDiagnosticData({ note: 'redirected to /account;jsessionid=SECRETSID then back' }).note,
+    'redirected to /account then back',
+  );
+  assert.equal(redactBrowserDiagnosticData({ note: 'hit /cb&code=RAWCODE next' }).note.includes('RAWCODE'), false);
+  // a clean relative path in prose is unchanged
+  assert.equal(redactBrowserDiagnosticData({ note: 'went to /account/dashboard ok' }).note, 'went to /account/dashboard ok');
+});

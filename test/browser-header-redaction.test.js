@@ -330,3 +330,21 @@ test('a sanitized URL-bearing header with a session/secret path segment passes t
     );
   }
 });
+
+// Codex re-review: CLEAN_ABSOLUTE_URL forbade `@` ANYWHERE, but `@` is legal in a path
+// segment (an npm scoped-package CDN, `/@scope/pkg`). Construction emits it; the invariant
+// now accepts it (only authority userinfo `@` — before the first `/` — is rejected).
+test('invariant accepts @ in a URL path but still rejects userinfo @', () => {
+  for (const url of ['https://cdn.example/@scope/pkg', 'https://h.example.com/users/@handle'])
+    assert.doesNotThrow(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } }),
+      `expected ${url} accepted`,
+    );
+  // construction preserves the @ path segment
+  assert.equal(toSafeHeaderPreview({ Location: 'https://cdn.example/@scope/pkg' }).location, 'https://cdn.example/@scope/pkg');
+  // userinfo @ (in the authority) is still rejected
+  assert.throws(
+    () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://user:pass@host/x', method: 'GET' } }),
+    /request\.url must be/,
+  );
+});

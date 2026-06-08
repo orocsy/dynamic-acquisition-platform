@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **170 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **175 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -249,7 +249,16 @@ group was substring-matched, so legit ids like `run_tokenizer_eval`/`run_jwtable
 `run_csrfDefense` were rejected and failed session registration) -> the two keyword
 groups are merged into ONE alnum-bounded group: a keyword that is only a PREFIX of a
 longer word is accepted, a separator-delimited marker (`access_token_x`, `pat_`) is still
-rejected. Tests: 170 pass / 0 fail.
+rejected. A SECOND codex re-review (of the merged-keyword commit) then flagged five more,
+all fixed: (a) `CLEAN_ABSOLUTE_URL` forbade `@` everywhere, false-rejecting a legit path
+`@` (`/@scope/pkg`) -> authority/path split, `@` allowed only in the path; (b)
+`SENSITIVE_KEY_PATTERN` drifted behind the credential names, so a bare secret under a
+`jwt`/`pat`/`csrf`/`private_key`/`auth_code` KEY leaked -> key pattern re-synced; (c)
+`ABSOLUTE_URL_PATTERN` missed opaque schemes (`data:`/`javascript:`/`chrome-extension:`,
+no `//`) in diagnostic prose -> matched and dropped via `sanitizeBrowserUrl`; (d) the
+path-param strip ran only whole-string, missing a relative URL embedded in prose
+(`/account;jsessionid=…`) -> stripped globally; (e) the ref denylist omitted
+`auth_code`/`session_id` (which the value side flags) -> added. Tests: 175 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

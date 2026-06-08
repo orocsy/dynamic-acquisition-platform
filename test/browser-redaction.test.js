@@ -505,3 +505,27 @@ test('isOpaqueBrowserRef rejects a bounded sig marker but keeps sig-containing w
   for (const ok of ['page:design-1', 'run_signal_handler', 'session:assign-x', 'page:insignia-7'])
     assert.equal(isOpaqueBrowserRef(ok), true, `expected ${ok} accepted`);
 });
+
+// Codex re-review (round 5) #2/#3/#7: compound credential names (the `_`-joined `csrf_token=`)
+// and URLs after punctuation/quote/bracket boundaries (not only whitespace) now redact.
+test('redactBrowserDiagnosticData redacts compound credential names and punctuation-prefixed URLs', () => {
+  for (const note of ['csrf_token=RAW1', 'github_jwt=RAW2', 'oauth_auth_code=RAW3'])
+    assert.equal(redactBrowserDiagnosticData({ note }).note, '[redacted]', note);
+  for (const note of ['(/oauth2/callback?code=RAW4)', '{"next":"/sso?ticket=RAW5"}', 'see (//127.0.0.1:9222/json/version?t=x)'])
+    assert.equal(redactBrowserDiagnosticData({ note }).note, '[redacted]', note);
+  // benign: TCP/IP, a `// comment`, a bare path, and `path=` are kept
+  assert.equal(
+    redactBrowserDiagnosticData({ note: 'TCP/IP via // TODO and the path=/api/users ok' }).note,
+    'TCP/IP via // TODO and the path=/api/users ok',
+  );
+});
+
+// Codex re-review #8: opaque (slash-less) URL schemes (javascript:/data:/mailto:/...) bypassed
+// the slash-assuming ref denylist, so session:javascript:alert(...) was echoed on a miss.
+test('isOpaqueBrowserRef rejects opaque (slash-less) URL schemes in refs', () => {
+  for (const r of ['session:javascript:alert(RAW)', 'session:mailto:a@b.com', 'session:data:text/html,RAW', 'session:vbscript:msgbox'])
+    assert.equal(isOpaqueBrowserRef(r), false, r);
+  // a benign id that merely contains the letters (no `scheme:`) is still accepted
+  assert.equal(isOpaqueBrowserRef('session:metadata-1'), true);
+  assert.equal(isOpaqueBrowserRef('session:opaque-001'), true);
+});

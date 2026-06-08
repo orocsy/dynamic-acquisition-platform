@@ -348,3 +348,21 @@ test('invariant accepts @ in a URL path but still rejects userinfo @', () => {
     /request\.url must be/,
   );
 });
+
+// Codex re-review #5/#6: an HTTP CDP debugger endpoint passed the http(s) header gate
+// and the invariant, and a percent-encoded matrix delimiter (`%3B`=`;`) survived. Both
+// are now dropped/rejected; a legit public /json/* API URL is still accepted.
+test('header sanitizer + invariant drop http(s) CDP endpoints and percent-encoded params', () => {
+  assert.equal(toSafeHeaderPreview({ Location: 'http://127.0.0.1:9222/devtools/page/RAWID' }).location, '[redacted]');
+  assert.equal(toSafeHeaderPreview({ Location: 'https://app.example.com/d%3Bjsessionid=RAWSID' }).location.includes('RAWSID'), false);
+  for (const url of ['http://127.0.0.1:9222/devtools/browser/RAWID', 'http://127.0.0.1:9222/json/version', 'https://app.example.com/d%3Bjsessionid=RAWSID'])
+    assert.throws(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } }),
+      /request\.url must be/,
+      `expected ${url} rejected`,
+    );
+  // a legit public /json/users API observation is accepted (not a CDP endpoint)
+  assert.doesNotThrow(() =>
+    assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://api.example.com/json/users', method: 'GET' } }),
+  );
+});

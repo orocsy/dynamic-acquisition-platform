@@ -124,6 +124,8 @@ export function guardTransparentRef(field: string, value: string): string {
  * (`;jsessionid=…`) are removed; relative/non-URL strings are truncated at the first
  * query/fragment/path-parameter delimiter.
  */
+const CDP_ENDPOINT_URL = /^(?:https?:\/\/[^/]+)?\/(?:devtools\/|json(?:\/(?:version|list|protocol|new|activate|close)\b|\/?$))/i;
+
 export function sanitizeUrlPreview(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   try {
@@ -131,14 +133,21 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return undefined;
     }
+    // Drop a CDP/devtools debugger endpoint even over http(s): `/devtools/browser/<id>`,
+    // `/devtools/page/<id>`, `/json/version`, ... expose a raw browser-control socket and
+    // target id, not a page (ws/wss are already dropped by the scheme gate above).
+    if (CDP_ENDPOINT_URL.test(parsed.pathname)) {
+      return undefined;
+    }
     parsed.search = '';
     parsed.hash = '';
     parsed.username = '';
     parsed.password = '';
-    // Drop RFC-3986 path parameters too (`;jsessionid=…`, stray `&…`): they live in
-    // `pathname`, not `search`, so without this a `;jsessionid=` post-redirect URL would
+    // Drop RFC-3986 path parameters too, INCLUDING percent-encoded delimiters (`%3B`=`;`,
+    // `%26`=`&`) a server decodes before reading them: they live in `pathname`, not
+    // `search`, so without this a `;jsessionid=`/`%3Bjsessionid=` redirect URL would
     // persist a live session id in a checkpoint preview.
-    parsed.pathname = parsed.pathname.split(/[;&]/)[0];
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26/i)[0];
     return parsed.toString();
   } catch {
     // Not an absolute URL. Keep ONLY a clean relative path (single leading slash,

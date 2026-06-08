@@ -237,3 +237,24 @@ test('sanitizeUrlPreview strips matrix/path params (;jsessionid=) from absolute 
   assert.equal(sanitizeUrlPreview('https://app.example.com/account/dashboard'), 'https://app.example.com/account/dashboard');
   assert.equal(sanitizeUrlPreview('/account/dashboard'), '/account/dashboard');
 });
+
+// Codex re-review #9/#4: an HTTP CDP debugger endpoint passed the http(s) gate (query
+// stripped, path/target id kept), and a percent-encoded `%3Bjsessionid=` survived the
+// raw `[;&]` split. Both are now dropped; a legit public /json path is kept.
+test('sanitizeUrlPreview drops http(s) CDP endpoints and percent-encoded path params', () => {
+  for (const u of [
+    'http://127.0.0.1:9222/devtools/browser/RAWID',
+    'http://127.0.0.1:9222/devtools/page/X',
+    'http://127.0.0.1:9222/json/version',
+    'https://127.0.0.1:9222/json/list',
+  ])
+    assert.equal(sanitizeUrlPreview(u), undefined, `expected dropped: ${u}`);
+  // percent-encoded ;jsessionid= is stripped, not persisted
+  assert.equal(sanitizeUrlPreview('https://app.example.com/dashboard%3Bjsessionid=RAWSID'), 'https://app.example.com/dashboard');
+  assert.equal(
+    JSON.stringify(toPersistableSessionRecord({ ...BASE, targetUrlPreview: 'http://127.0.0.1:9222/devtools/browser/RAWID' })).includes('RAWID'),
+    false,
+  );
+  // a legit public /json/users API path is NOT a CDP endpoint -> kept
+  assert.equal(sanitizeUrlPreview('https://api.example.com/json/users'), 'https://api.example.com/json/users');
+});

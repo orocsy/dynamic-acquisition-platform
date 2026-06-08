@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **180 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **184 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -289,7 +289,22 @@ data channel. The in-place helpers (`sanitizeBrowserUrl`, `ABSOLUTE_URL_PATTERN`
 deleted. This ends the diagnostic-sanitizer edge-case hunt by construction. (The persisted
 checkpoint data — refs, `targetUrlPreview`, observation invariant — is unchanged and stays
 the precise, enumeration-verified path; only the lossy *diagnostic* layer went aggressive.)
-Tests: 180 pass / 0 fail.
+
+**The aggressive redesign ended the in-place diagnostic hunt, but a FIFTH codex re-review
+then surfaced nine genuine gaps in OTHER files (pre-existing, not diagnostic-sanitizer):**
+(1) HTTP CDP debugger endpoints (`http://127.0.0.1:9222/devtools/browser/<id>`, `/json/version`)
+passed the http(s) gate in `sanitizeUrlPreview` + `sanitizeHeaderUrlValue` + the observation
+invariant -> a `CDP_ENDPOINT_URL` regex now drops `/devtools/<…>` and the `/json` discovery
+paths even over http(s) (narrow: a legit public `/json/users` API URL is still kept, which
+Phase 3.4 capture needs); (2) percent-encoded matrix delimiters (`%3Bjsessionid=`) survived
+the raw `[;&]` split -> the split + invariant now also reject `%3b`/`%26`; (3) opaque
+slash-less URL schemes (`javascript:`/`mailto:`/`data:`…) bypassed the slash-assuming ref
+denylist (`session:javascript:alert(…)` echoed) -> added to `BROWSER_REF_UNSAFE_PATTERN`;
+(4) compound credential names (`csrf_token=`, `github_jwt=`) used `\b` (misses `_`) ->
+`CREDENTIAL_ASSIGNMENT_PATTERN` now alnum-bounds all keywords; (5) URLs after
+punctuation/quote/bracket (`(/oauth?code=`, `{"next":"/sso?…"`) escaped the
+whitespace-anchored `RISKY_DIAGNOSTIC_PATTERN` -> it now uses `(?<![a-z0-9])` boundaries.
+Tests: 184 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

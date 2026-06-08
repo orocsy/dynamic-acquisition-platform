@@ -26,7 +26,7 @@ const OPAQUE_URL_SCHEME_PATTERN = /\b(?:data|javascript|vbscript|blob|filesystem
  * scheduled"`, `"authorization endpoint"`) does NOT match and is kept.
  */
 const CREDENTIAL_ASSIGNMENT_PATTERN =
-  /\b(?:authorization|password|passwd|pwd|secret|client[-_]?secret|private[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|jwt|api[-_]?key|apikey|x-api-key|otp|mfa|signature|sig|csrf|xsrf|auth[-_]?code|session[-_]?id|cookie|set-cookie)\b\s*[:=]\s*\S|(?<![a-z0-9])pat(?![a-z0-9])\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
+  /(?<![a-z0-9])(?:authorization|password|passwd|pwd|secret|client[-_]?secret|private[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|jwt|api[-_]?key|apikey|x-api-key|otp|mfa|signature|sig|csrf|xsrf|pat|auth[-_]?code|session[-_]?id|cookie|set-cookie)(?![a-z0-9])\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
 
 /**
  * Fold a string to a canonical denylist VIEW (the returned value is never this —
@@ -48,7 +48,7 @@ function foldForDenylist(value: string): string {
  * query, fragment, or matrix/path parameter -- the parts a secret rides in). A bare path
  * with no delimiter (a route like `/api/users`) and plain prose are NOT risky.
  */
-const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?:^|\s)\/\/[^\s"'<>]|(?:^|\s)\/[^\s"'<>]*[?#;&]/i;
+const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?<![a-z0-9])\/\/[^\s"'<>]|(?<![a-z0-9])\/[^\s"'<>]*[?#;&]/i;
 
 /**
  * Aggressive defense-in-depth for a free-form diagnostic string. Sanitizing a URL or

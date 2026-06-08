@@ -175,3 +175,14 @@ test('guardSurrogateSessionId rejects whitespace / zero-width-smuggled surrogate
   }
   assert.equal(guardSurrogateSessionId('sessionId', 'session:clean-1'), 'session:clean-1');
 });
+
+// Codex review: a scheme-relative URL (`//user:pass@host/...`) makes new URL throw,
+// so the fallback kept the userinfo. Must strip it.
+test('sanitizeUrlPreview strips userinfo from a scheme-relative URL', () => {
+  const out = sanitizeUrlPreview('//x:y@example.com/account?q=1');
+  assert.equal(out, '//example.com/account');
+  assert.equal(out.includes('x:y'), false);
+  const rec = toPersistableSessionRecord({ ...BASE, targetUrlPreview: '//x:y@example.com/account?q=1' });
+  assert.equal(rec.targetUrlPreview, '//example.com/account');
+  assert.equal(JSON.stringify(rec).includes('x:y'), false);
+});

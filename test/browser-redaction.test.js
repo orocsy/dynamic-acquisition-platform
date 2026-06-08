@@ -163,3 +163,10 @@ test('redactBrowserDiagnosticData drops an embedded non-http(s) URL, not just it
   // http(s) URLs are still kept (query stripped)
   assert.equal(redactBrowserDiagnosticData({ note: 'go https://ok.example/p?q=1' }).note, 'go https://ok.example/p');
 });
+
+// Codex review (sibling): a whole-string scheme-relative ref kept its userinfo.
+test('redactBrowserDiagnosticData strips userinfo from a scheme-relative URL', () => {
+  const out = redactBrowserDiagnosticData({ note: '//x:y@host.example/path?q=1' });
+  assert.equal(out.note, '//host.example/path');
+  assert.equal(out.note.includes('x:y'), false);
+});

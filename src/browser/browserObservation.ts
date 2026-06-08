@@ -101,8 +101,10 @@ function sanitizeHeaderUrlValue(value: string): string {
     }
     return parsed.toString();
   } catch {
-    // relative URL or non-URL: drop everything from the first query/fragment delimiter
-    return value.split(/[?#]/, 1)[0] || REDACTED;
+    // relative or scheme-relative (`//host/...`) URL: drop query/fragment AND any
+    // userinfo (`//user:pass@host` -> `//host`), which `new URL` can't parse here.
+    const noQuery = value.split(/[?#]/, 1)[0];
+    return noQuery.replace(/^(\/\/)[^/@]*@/, '$1') || REDACTED;
   }
 }
 
@@ -175,15 +177,18 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
       throw new Error(`browser observation header ${path}.${name} must be redacted`);
     }
     if (URL_BEARING_HEADER_ALLOWLIST.has(lowerName)) {
-      // A URL-bearing header value must already be sanitized: no query/fragment/
-      // userinfo, AND only http(s) (or a relative path) — never a raw ws/devtools/
-      // chrome endpoint that merely had its query stripped.
-      const schemeMatch = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value);
+      // A URL-bearing header value must already be sanitized: no query/fragment, no
+      // userinfo (absolute OR scheme-relative `//user@host`), and any EXPLICIT
+      // scheme must be http(s). An opaque scheme with no `//` (`javascript:`,
+      // `data:`, `mailto:`) is rejected too — construction drops it; this catches a
+      // prebuilt observation that bypassed construction.
+      const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(value);
       const nonHttpScheme =
         schemeMatch !== null &&
         schemeMatch[1].toLowerCase() !== 'http' &&
         schemeMatch[1].toLowerCase() !== 'https';
-      if (/[?#]/.test(value) || /^[a-z]+:\/\/[^/]*@/i.test(value) || nonHttpScheme) {
+      const hasUserinfo = /^[a-z][a-z0-9+.-]*:\/\/[^/]*@/i.test(value) || /^\/\/[^/]*@/.test(value);
+      if (/[?#]/.test(value) || hasUserinfo || nonHttpScheme) {
         throw new Error(`browser observation header ${path}.${name} must be redacted`);
       }
       continue;

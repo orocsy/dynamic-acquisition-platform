@@ -61,8 +61,10 @@ const CREDENTIAL_ASSIGNMENT_PATTERN =
  */
 function sanitizeStringForDiagnostics(value: string): string {
   let out = value.replace(ABSOLUTE_URL_PATTERN, (match) => sanitizeBrowserUrl(match));
-  if (out === value && !/\s/.test(out) && /[?#]/.test(out)) {
-    out = out.split(/[?#]/, 1)[0] || out;
+  if (out === value && !/\s/.test(out)) {
+    // whole-string relative / scheme-relative ref: strip query/fragment AND userinfo
+    // (`//user:pass@host` -> `//host`), which ABSOLUTE_URL_PATTERN doesn't catch.
+    out = (out.split(/[?#]/, 1)[0] || out).replace(/^(\/\/)[^/@]*@/, '$1');
   }
   // Fold full-width / compatibility forms to ASCII and drop zero-width chars for the
   // denylist check ONLY, so `Ｂｅａｒｅｒ X` and `to{ZWSP}ken=X` can't dodge it. The value

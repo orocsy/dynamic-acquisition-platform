@@ -136,7 +136,11 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     parsed.password = '';
     return parsed.toString();
   } catch {
-    return value.split(/[?#]/, 1)[0] || undefined;
+    // Relative or scheme-relative (`//host/...`) URL: `new URL` throws on these, so
+    // strip query/fragment AND any userinfo (`//user:pass@host` -> `//host`) — the
+    // bare split kept the credentials.
+    const noQuery = value.split(/[?#]/, 1)[0];
+    return noQuery.replace(/^(\/\/)[^/@]*@/, '$1') || undefined;
   }
 }
 

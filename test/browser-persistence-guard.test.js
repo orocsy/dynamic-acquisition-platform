@@ -198,3 +198,42 @@ test('sanitizeUrlPreview drops scheme-relative + smuggled host URLs, keeps relat
     undefined,
   );
 });
+
+// Adversarial review (LEAK 3): the relative-path allow-list `[\x21-\x7e]` included
+// backslash (0x5c), so `/\host` passed as a "relative path" — but `new URL` treats
+// `\`==`/` in special schemes and resolves it to a raw host:port endpoint. Backslash
+// is now excluded; the smuggle is dropped instead of persisted.
+test('sanitizeUrlPreview drops a backslash-smuggled //host endpoint', () => {
+  const bs = String.fromCharCode(92); // backslash, built at runtime (no literal in source)
+  const endpoint = 'evil.internal:9222/devtools/browser/RAW';
+  for (const v of ['/' + bs + endpoint, '/' + bs + '/' + endpoint, '/a' + bs + 'b/c'])
+    assert.equal(sanitizeUrlPreview(v + '?q=1'), undefined, `expected dropped: ${JSON.stringify(v)}`);
+  // a clean relative path (no backslash) is still kept
+  assert.equal(sanitizeUrlPreview('/api/resource-1?q=1'), '/api/resource-1');
+  // ...and the smuggle is dropped on persist, not stored
+  assert.equal(
+    toPersistableSessionRecord({ ...BASE, targetUrlPreview: '/' + bs + endpoint }).targetUrlPreview,
+    undefined,
+  );
+});
+
+// Fifth adversarial review: URL sanitization stripped ?query and #fragment but NOT
+// RFC-3986 path parameters (`;jsessionid=…`) — they live in pathname, so a Java/Spring
+// session id in a post-redirect URL persisted verbatim in targetUrlPreview. Path params
+// (and stray `&…`) are now stripped from both the absolute and relative branches.
+test('sanitizeUrlPreview strips matrix/path params (;jsessionid=) from absolute and relative URLs', () => {
+  const raw = 'jsessionid=9F8E7D6C5B4A39281706';
+  assert.equal(sanitizeUrlPreview('https://app.example.com/account/dashboard;' + raw), 'https://app.example.com/account/dashboard');
+  assert.equal(sanitizeUrlPreview('/account/dashboard;' + raw), '/account/dashboard');
+  assert.equal(sanitizeUrlPreview('/oauth/callback&code=AUTHCODE&state=xyz'), '/oauth/callback');
+  // the session id never reaches a persisted record
+  for (const v of ['https://app.example.com/account/dashboard;' + raw, '/account/dashboard;' + raw])
+    assert.equal(
+      JSON.stringify(toPersistableSessionRecord({ ...BASE, targetUrlPreview: v })).includes('9F8E7D6C5B4A39281706'),
+      false,
+      `leaked jsessionid from ${v}`,
+    );
+  // a clean path with no params is unchanged
+  assert.equal(sanitizeUrlPreview('https://app.example.com/account/dashboard'), 'https://app.example.com/account/dashboard');
+  assert.equal(sanitizeUrlPreview('/account/dashboard'), '/account/dashboard');
+});

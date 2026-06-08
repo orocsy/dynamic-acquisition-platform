@@ -120,8 +120,9 @@ export function guardTransparentRef(field: string, value: string): string {
  * non-web scheme (`ws`/`wss`/`chrome`/`devtools`/`file`/`data`/…) is not a page URL
  * but a raw endpoint/path (a CDP debugger socket, a profile/file path) that must
  * not land in a checkpoint, so it is dropped (returns `undefined`) rather than
- * persisted with only its query stripped. Relative/non-URL strings are truncated
- * at the first query/fragment delimiter.
+ * persisted with only its query stripped. Query, fragment, AND path parameters
+ * (`;jsessionid=…`) are removed; relative/non-URL strings are truncated at the first
+ * query/fragment/path-parameter delimiter.
  */
 export function sanitizeUrlPreview(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -134,6 +135,10 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     parsed.hash = '';
     parsed.username = '';
     parsed.password = '';
+    // Drop RFC-3986 path parameters too (`;jsessionid=…`, stray `&…`): they live in
+    // `pathname`, not `search`, so without this a `;jsessionid=` post-redirect URL would
+    // persist a live session id in a checkpoint preview.
+    parsed.pathname = parsed.pathname.split(/[;&]/)[0];
     return parsed.toString();
   } catch {
     // Not an absolute URL. Keep ONLY a clean relative path (single leading slash,
@@ -143,8 +148,8 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     // `<NUL>//host`, `<ZWSP>//host`) — all can carry a raw host:port endpoint and
     // are not explicit http(s) URLs. A `startsWith('//')` test misses every smuggled
     // variant, so allow-list the safe shape instead of deny-listing.
-    const path = value.split(/[?#]/, 1)[0];
-    return /^\/(?!\/)[\x21-\x7e]*$/.test(path) ? path : undefined;
+    const path = value.split(/[?#;&]/, 1)[0];
+    return /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/.test(path) ? path : undefined;
   }
 }
 

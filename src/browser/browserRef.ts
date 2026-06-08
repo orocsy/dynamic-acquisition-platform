@@ -1,12 +1,24 @@
 import type { BrowserSessionRef } from '../runtime';
 import type { BrowserSessionRefParts } from './types';
 
+// Reject any ref embedding a secret, path, or endpoint. Two keyword groups: the
+// alnum-bounded group (lookarounds, NOT \b) treats `_`/`-`/`:` as separators so
+// `otp_SECRET`/`secret_x` are caught (a trailing `\b` missed them — `_` is a word
+// char); the substring group catches fragments dangerous anywhere. `pat` is gated
+// by a lookbehind so PAT markers (`pat_`, `github_pat_`) reject without eating
+// path/pattern/compat. URL schemes carry `//` (already caught by [\\/]).
 const BROWSER_REF_UNSAFE_PATTERN =
-  /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|\b(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/)\b|(?:token|jwt|credential|private[-_]?key|csrf|xsrf))/i;
+  /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/|(?<![a-z0-9])(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools)(?![a-z0-9])|(?:token|jwt|credential|private[-_]?key|csrf|xsrf|(?<![a-z])pat[-_]|passwd|pwd|signature))/i;
 
-// Whitespace (the `\s` class, incl. NBSP and line breaks), C0/C1 control chars,
-// and zero-width / bidi format chars. `\ufeff` (BOM/ZWNBSP) is already part of `\s`.
-const REF_FORBIDDEN_CHAR_PATTERN = /[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060]/;
+// Forbidden code points in any opaque ref: ALL whitespace (the \s class,
+// incl. NBSP and line breaks), ALL control chars (Unicode category Cc -- C0,
+// DEL, C1), and ALL invisible format / default-ignorable chars (categories Cf
+// and Default_Ignorable_Code_Point -- zero-width spaces, bidi marks/overrides/
+// isolates, joiners, the Arabic letter mark U+061C, soft hyphen, variation
+// selectors, BOM). Using Unicode property classes instead of an enumerated
+// list closes the recurring "one more smuggling code point" gap by construction:
+// every present and future format character is covered, not just listed ones.
+const REF_FORBIDDEN_CHAR_PATTERN = /[\s\p{Cc}\p{Cf}\p{M}\p{Default_Ignorable_Code_Point}]/u;
 
 export function isOpaqueBrowserRef(value: string): boolean {
   // Reject empty, ANY whitespace (internal or edge), control chars, and zero-width/
@@ -16,7 +28,13 @@ export function isOpaqueBrowserRef(value: string): boolean {
   // this predicate (isOpaqueSurrogateSessionId, guardOpaqueRef, isSafeBrowserRefPart).
   if (value.length === 0) return false;
   if (REF_FORBIDDEN_CHAR_PATTERN.test(value)) return false;
-  return !BROWSER_REF_UNSAFE_PATTERN.test(value);
+  // Test a folded view too: NFKD decomposes full-width / ligature / accented forms
+  // to base ASCII, and stripping combining marks (\p{M}) collapses `to<mark>ken` and
+  // a precomposed `se<accent>ret` back to the keyword. So neither a full-width form
+  // nor a combining-mark split can smuggle a secret past the denylist. (The raw
+  // forbidden-char check above already rejects a standalone mark / invisible.)
+  const folded = value.normalize('NFKD').replace(/\p{M}/gu, '');
+  return !BROWSER_REF_UNSAFE_PATTERN.test(value) && !BROWSER_REF_UNSAFE_PATTERN.test(folded);
 }
 
 /**

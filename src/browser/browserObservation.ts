@@ -1,4 +1,5 @@
 import type { BrowserObservationId, PageTargetRef } from './types';
+import { isPageTargetRef } from './browserRef';
 
 export type BrowserObservationSource = 'cdp' | 'playwright' | 'daemon-fixture';
 
@@ -45,6 +46,17 @@ export type BrowserObservation = {
 
 const REDACTED = '[redacted]';
 const SENSITIVE_HEADER_PATTERN = /(?:authorization|cookie|set-cookie|api[-_]?key|x-api-key|token|secret|session|mfa|otp|captcha)/i;
+
+// A persistence-safe URL field: a clean http(s) absolute URL (no userinfo, query,
+// fragment, whitespace, control char, or backslash) OR a clean relative path (single
+// leading slash, printable ASCII, no backslash — `/\\host` would smuggle a host that
+// `new URL` resolves via `\\`==`/`). Shared by the header check and the request.url
+// invariant so both enforce one policy.
+const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@?#;&\s\x5c\x00-\x1f]+$/i;
+const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
+function isSanitizedUrlField(value: string): boolean {
+  return CLEAN_ABSOLUTE_URL.test(value) || CLEAN_RELATIVE_PATH.test(value);
+}
 
 /**
  * Header names whose *values* are safe to retain verbatim. These carry only
@@ -99,13 +111,16 @@ function sanitizeHeaderUrlValue(value: string): string {
       parsed.username = '';
       parsed.password = '';
     }
+    // Drop RFC-3986 path parameters too (`;jsessionid=…`, stray `&…`) — they sit in
+    // pathname, not search, so a session id in a redirect Location would survive.
+    parsed.pathname = parsed.pathname.split(/[;&]/)[0];
     return parsed.toString();
   } catch {
     // Keep ONLY a clean relative path; drop scheme-relative or whitespace/tab/control/
     // zero-width-smuggled host-bearing forms (a URL parser normalizes `/<tab>/host` to
     // `//host`). A relative path has no host:port to leak. See sanitizeUrlPreview.
-    const path = value.split(/[?#]/, 1)[0];
-    return /^\/(?!\/)[\x21-\x7e]*$/.test(path) ? path : REDACTED;
+    const path = value.split(/[?#;&]/, 1)[0];
+    return CLEAN_RELATIVE_PATH.test(path) ? path : REDACTED;
   }
 }
 
@@ -171,31 +186,27 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
     if (SENSITIVE_HEADER_PATTERN.test(lowerName)) {
       throw new Error(`browser observation header ${path}.${name} must be redacted`);
     }
+    if (URL_BEARING_HEADER_ALLOWLIST.has(lowerName)) {
+      // A URL-bearing header value must already be sanitized to EITHER a clean http(s)
+      // absolute URL OR a clean relative path: no query/fragment/path-param/userinfo,
+      // http(s) scheme only. Everything else is rejected — scheme-relative `//host`, an
+      // opaque/non-http scheme (`javascript:`/`data:`/`ws:`), a tab/control/zero-width-
+      // smuggled host, userinfo, or a `;jsessionid=` path param — any of which can carry
+      // a raw endpoint or a secret. Checked BEFORE the generic sensitive-substring test
+      // below so a legitimately sanitized path that merely CONTAINS `session`/`secret`
+      // as a segment (e.g. `/api/v2/sessions`) is not falsely rejected; isSanitizedUrlField
+      // already guarantees no secret-carrying structure survives. (Allow-list the safe
+      // shapes; deny-listing missed smuggled variants.)
+      if (!isSanitizedUrlField(value)) {
+        throw new Error(`browser observation header ${path}.${name} must be redacted`);
+      }
+      continue;
+    }
     if (SENSITIVE_HEADER_PATTERN.test(value)) {
       throw new Error(`browser observation header ${path}.${name} contains unsafe value`);
     }
     if (PRESENCE_ONLY_HEADER_ALLOWLIST.has(lowerName)) {
       throw new Error(`browser observation header ${path}.${name} must be redacted`);
-    }
-    if (URL_BEARING_HEADER_ALLOWLIST.has(lowerName)) {
-      // A URL-bearing header value must already be sanitized: no query/fragment, no
-      // userinfo (absolute OR scheme-relative `//user@host`), and any EXPLICIT
-      // scheme must be http(s). An opaque scheme with no `//` (`javascript:`,
-      // `data:`, `mailto:`) is rejected too — construction drops it; this catches a
-      // prebuilt observation that bypassed construction.
-      // A sanitized URL-bearing value must be EITHER a clean http(s) absolute URL (no
-      // userinfo/query/fragment/whitespace/control) OR a clean relative path (single
-      // leading slash, printable ASCII). Everything else is rejected: scheme-relative
-      // `//host`, a tab/control/zero-width-smuggled host, an opaque/non-http scheme
-      // (`javascript:`/`data:`/`ws:`), or userinfo — any of which can carry a raw
-      // endpoint or a secret. (Allow-list the safe shapes; deny-listing missed
-      // smuggled variants.)
-      const cleanAbsolute = /^https?:\/\/[^@?#\s\x00-\x1f]+$/i.test(value);
-      const cleanRelative = /^\/(?!\/)[\x21-\x7e]*$/.test(value);
-      if (!cleanAbsolute && !cleanRelative) {
-        throw new Error(`browser observation header ${path}.${name} must be redacted`);
-      }
-      continue;
     }
     if (!SAFE_RAW_HEADER_VALUE_ALLOWLIST.has(lowerName)) {
       throw new Error(`browser observation header ${path}.${name} must be redacted`);
@@ -205,6 +216,15 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
 
 export function assertSafeBrowserObservation(observation: BrowserObservation): void {
   assertJsonSafe(observation, 'observation');
+  // request.url and pageTargetRef are persisted alongside the header previews, so the
+  // invariant must validate them too: a prebuilt observation must not carry a raw
+  // query/userinfo/endpoint in request.url, nor a non-page-shaped pageTargetRef.
+  if (observation.request?.url !== undefined && !isSanitizedUrlField(observation.request.url)) {
+    throw new Error('browser observation request.url must be a sanitized http(s) URL or relative path');
+  }
+  if (observation.pageTargetRef !== undefined && !isPageTargetRef(observation.pageTargetRef)) {
+    throw new Error('browser observation pageTargetRef must be an opaque page target ref (page:<id>)');
+  }
   assertHeaderPreviewSafe(observation.request?.headersPreview, 'request.headersPreview');
   assertHeaderPreviewSafe(observation.response?.headersPreview, 'response.headersPreview');
 }

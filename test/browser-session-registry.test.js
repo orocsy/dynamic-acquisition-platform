@@ -260,3 +260,50 @@ test('update() redacts a keyword-bearing sessionId on a miss', () => {
     },
   );
 });
+
+// Codex review (follow-up): isOpaqueSurrogateSessionId still omitted `pat`, so a
+// `session:pat_...` (personal access token) miss was echoed. Now redacted too.
+test('update() redacts a pat-bearing sessionId on a miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  const id = 'session:' + 'pat' + '_ABCD'; // assembled so source carries no literal PAT token
+  assert.throws(
+    () => registry.update({ sessionId: id, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('pat_ABCD'), false);
+      assert.match(err.message, /redacted-session-id/);
+      return true;
+    },
+  );
+});
+
+// Adversarial review (LEAK 1): a `keyword_<value>` surrogate defeated the `\b`
+// trailing boundary (`_` is a word char) and was echoed verbatim on a miss. The
+// alnum-boundary fix now classifies it unsafe -> redacted.
+test('update() redacts a keyword_<value> sessionId (boundary-defeating) on a miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  const id = 'otp' + '_LEAKEDSECRET'; // otp_ : keyword with no trailing word boundary
+  assert.throws(
+    () => registry.update({ sessionId: id, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('LEAKEDSECRET'), false);
+      assert.match(err.message, /redacted-session-id/);
+      return true;
+    },
+  );
+});
+
+// Second adversarial review (LEAK A): a combining-mark-split keyword surrogate
+// (`sećret_...`) defeated the denylist and was echoed on a miss. Now redacted.
+test('update() redacts a combining-mark-split sessionId on a miss', () => {
+  const C = (n) => String.fromCodePoint(n);
+  const registry = new InMemoryBrowserSessionRegistry();
+  const id = 'se' + 'c' + C(0x301) + 'ret' + '_LEAKEDVAL'; // sećret_... (decomposed)
+  assert.throws(
+    () => registry.update({ sessionId: id, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('LEAKEDVAL'), false);
+      assert.match(err.message, /redacted-session-id/);
+      return true;
+    },
+  );
+});

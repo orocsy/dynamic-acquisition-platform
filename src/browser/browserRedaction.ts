@@ -5,7 +5,7 @@ const SENSITIVE_KEY_PATTERN =
   /(?:password|passwd|pwd|secret|authorization|cookie|set-cookie|api[-_]?key|token|mfa|otp|captcha|credential|session|profile|user-data-dir)/i;
 const BROWSER_REF_KEY_PATTERN = /(?:browserSessionRef|pageTargetRef|browserDaemonRef|browserObservationId|daemonId|targetRef|ref)$/i;
 const PROFILE_LIKE_VALUE_PATTERN =
-  /(?:^~\/|^[a-z]:[\\/]|^\/(?:Users|Applications|Volumes|private|tmp|var|Library)\b|[\\/](?:Library|Application Support|Google|Chrome|Chromium)[\\/]|user-data-dir|\bprofile\b|chrome:\/\/|devtools|ws:\/\/|wss:\/\/)/i;
+  /(?:^~\/|^[a-z]:[\\/]|^\/(?:Users|Applications|Volumes|private|tmp|var|Library)\b|[\\/](?:Library|Application Support|Google|Chrome|Chromium)[\\/]|user-data-dir|\bprofile\b|chrome:\/\/|devtools|ws:\/\/|wss:\/\/|file:\/\/)/i;
 
 function sanitizeBrowserUrl(value: string): string {
   try {
@@ -23,9 +23,13 @@ function sanitizeBrowserUrl(value: string): string {
     // Strip userinfo too: `https://user:pass@host/...` must not retain `user:pass`.
     parsed.username = '';
     parsed.password = '';
+    // ...and RFC-3986 path parameters (`;jsessionid=…`, stray `&…`): same path-param
+    // strip as sanitizeUrlPreview / sanitizeHeaderUrlValue, so a redirect session id in
+    // a diagnostic URL never surfaces (they live in pathname, not search).
+    parsed.pathname = parsed.pathname.split(/[;&]/)[0];
     return parsed.toString();
   } catch {
-    return value.split(/[?#]/, 1)[0] || value;
+    return value.split(/[?#;&]/, 1)[0] || value;
   }
 }
 
@@ -52,6 +56,20 @@ const CREDENTIAL_ASSIGNMENT_PATTERN =
   /\b(?:authorization|password|passwd|pwd|secret|client[-_]?secret|private[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|jwt|api[-_]?key|apikey|x-api-key|pat|otp|mfa|signature|sig|csrf|xsrf|auth[-_]?code|session[-_]?id|cookie|set-cookie)\b\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
 
 /**
+ * Fold a string to a canonical denylist VIEW (the returned value is never this —
+ * it only decides whether to redact). NFKD decomposes full-width / ligature forms
+ * to ASCII and splits accented letters into base + combining mark; then invisible
+ * format / default-ignorable chars AND combining marks (\p{M}) are stripped. So a
+ * zero-width split (`to<ZWSP>ken`), a full-width keyword (`devtools`/`Bearer`), and a
+ * combining-mark split (`to<acute>ken` / precomposed `se<accent>ret`) all collapse
+ * to the bare keyword. NFKC alone missed marks (it recomposes accents); NFKD + \p{M}
+ * closes the whole format/mark class by construction.
+ */
+function foldForDenylist(value: string): string {
+  return value.normalize('NFKD').replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}\p{M}]/gu, '');
+}
+
+/**
  * Strip secrets from a free-form diagnostic string. URLs are handled precisely
  * (they CAN be delimited): absolute URLs are sanitized in place wherever they
  * appear, and a whole-string relative/schemeless ref carrying a query/fragment is
@@ -65,12 +83,12 @@ function sanitizeStringForDiagnostics(value: string): string {
     // a whole-string scheme-relative `//host/...` can be a raw endpoint -> redact it.
     // (ws/devtools/chrome are already wholesale-redacted upstream by PROFILE_LIKE.)
     if (out.startsWith('//')) return REDACTED;
-    out = out.split(/[?#]/, 1)[0] || out;
+    out = out.split(/[?#;&]/, 1)[0] || out;
   }
-  // Fold full-width / compatibility forms to ASCII and drop zero-width chars for the
-  // denylist check ONLY, so `Ｂｅａｒｅｒ X` and `to{ZWSP}ken=X` can't dodge it. The value
-  // returned is the original `out`; this normalized view only decides whether to redact.
-  const denylistView = out.normalize('NFKC').replace(/[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g, '');
+  // denylist check ONLY (see foldForDenylist): NFKD + strip invisible/format AND
+  // combining-mark chars, so zero-width / full-width / accent splits all collapse to
+  // the bare keyword. The returned value stays the original `out`.
+  const denylistView = foldForDenylist(out);
   if (CREDENTIAL_ASSIGNMENT_PATTERN.test(denylistView)) {
     return REDACTED;
   }
@@ -79,7 +97,10 @@ function sanitizeStringForDiagnostics(value: string): string {
 
 function shouldRedactKey(key: string): boolean {
   if (BROWSER_REF_KEY_PATTERN.test(key)) return false;
-  return SENSITIVE_KEY_PATTERN.test(key);
+  // Fold the key name too (full-width / accented / combining-mark-split sensitive
+  // keys), mirroring the value-side fold — otherwise a disguised sensitive key dodges
+  // redaction and a keyword-free secret value leaks verbatim under it.
+  return SENSITIVE_KEY_PATTERN.test(key) || SENSITIVE_KEY_PATTERN.test(foldForDenylist(key));
 }
 
 function redactValue(key: string, value: unknown): unknown {
@@ -88,7 +109,9 @@ function redactValue(key: string, value: unknown): unknown {
     if (BROWSER_REF_KEY_PATTERN.test(key)) {
       return isOpaqueBrowserRef(value) ? value : REDACTED;
     }
-    if (PROFILE_LIKE_VALUE_PATTERN.test(value)) return REDACTED;
+    // test a folded view too, so a full-width / accented `devtools`/`chrome://`/
+    // `user-data-dir` endpoint or profile path cannot dodge the raw check (LEAK B).
+    if (PROFILE_LIKE_VALUE_PATTERN.test(value) || PROFILE_LIKE_VALUE_PATTERN.test(foldForDenylist(value))) return REDACTED;
     return sanitizeStringForDiagnostics(value);
   }
   if (Array.isArray(value)) {

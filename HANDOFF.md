@@ -1,4 +1,4 @@
-# Handoff — Phase 3.3 complete (review round 8 applied), ready for 3.4
+# Handoff — Phase 3.3 complete (hardening + codex + adversarial review applied), ready for 3.4
 
 Snapshot for picking this up in a fresh session (e.g. Claude Code). Read this
 first, then `docs/phase3-low-level-design.md` for the slice you're building.
@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **133 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **169 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -173,6 +173,78 @@ class, in the guards I had *not* adversarially probed (I'd hardened `pageTargetR
 The whole guard/echo surface of the persistence layer was then swept by probe
 (transparent ref, surrogate id, page ref, ref parts, url preview, registry
 update/register/get) — all green.
+
+**Review rounds 8-9 (this session) -- codex auto-review (PR #1) + a fresh
+adversarial pass, all the same denylist-drift / smuggle class:**
+
+Codex flagged two enumerated-denylist gaps: (a) the ref denylist omitted `pat`, so a
+`session:pat_...` surrogate was echoed on a registry miss -> added
+`pat`/`passwd`/`pwd`/`signature`; (b) the redaction denylist view stripped only a
+hand-listed set of zero-width chars and missed U+061C (Arabic Letter Mark) -> BOTH
+the ref forbidden-char check and the redaction view now use Unicode property classes
+(categories Cc, Cf, and Default_Ignorable_Code_Point), so every present/future format
+char is covered by construction, not by enumeration.
+
+Six independent adversarial passes then found eleven more, all fixed + regression-tested. Pass 1 found four:
+1. `keyword_<secret>` defeated the word-boundary group (`_` is a word char, so
+   `otp_X` had no trailing boundary, was classed opaque, persisted, and echoed) ->
+   the secret words now use alnum-boundary lookarounds that treat `_`/`-`/`:` as
+   separators;
+2. `isOpaqueBrowserRef` did not NFKC-fold, so a full-width keyword passed as opaque
+   -> it now tests an NFKC-folded view too;
+3. a relative path containing a backslash (which `new URL` reinterprets into a
+   `//host` authority) slipped past the relative AND absolute URL allow-lists -> the
+   backslash byte (0x5c) is now excluded from both;
+4. `assertSafeBrowserObservation` validated only header previews -> it now also
+   validates `request.url` and `pageTargetRef`, folding in the round-8 Finding-2 item
+   that had been deferred to 3.4.
+Pass 2 then found two deeper denylist-evasion siblings:
+5. a combining mark between keyword letters (`to<mark>ken`, or a precomposed accented
+   `secret`) -- the views stripped format / zero-width chars but not Unicode Marks, and
+   NFKC recomposes accents rather than dropping them -> the ref forbidden-char check now
+   includes `\p{M}`, and both the ref check and the redaction view fold via NFKD then
+   strip `\p{M}` (a shared `foldForDenylist`);
+6. `PROFILE_LIKE_VALUE_PATTERN` (devtools / chrome:// / user-data-dir / profile paths)
+   was tested on the raw value only -> now tested on the NFKD-folded view too, so a
+   full-width endpoint / path keyword can't survive verbatim.
+Pass 3 found a symmetric gap:
+7. `shouldRedactKey` folded the diagnostic VALUE but not the KEY name, so a sensitive
+   key disguised full-width / accented (`authorization`, `cookie`) dodged redaction and
+   a keyword-free secret value under it leaked -> the key name is now folded too (the
+   same `foldForDenylist` the value side uses).
+Pass 4 found a construction-vs-invariant asymmetry:
+8. the `assertSafeBrowserObservation` invariant's relative-path allow-list admitted
+   `?`/`#` (they sit in the printable-ASCII range), so a query/fragment-bearing relative
+   `request.url` / redirect (a keyword-free OAuth `code` / CAS `ticket`) passed the
+   prebuilt-observation gate even though construction strips it -> the relative allow-list
+   now excludes `?`/`#`, symmetric with the absolute one.
+Pass 5 found a URL-component gap and a false-reject:
+9. URL sanitization stripped `?query`/`#fragment` but NOT RFC-3986 path parameters
+   (`;jsessionid=…`) — they live in `pathname`, so a Java/Spring post-redirect URL would
+   persist a live session id in `targetUrlPreview` -> both sanitizers now strip `;`/`&`
+   path params (absolute `pathname` split + relative `[?#;&]` split), and both allow-lists
+   exclude `;`/`&` so the invariant rejects a prebuilt one.
+10. `assertHeaderPreviewSafe` ran the sensitive-substring check BEFORE the URL-bearing
+    check, so a legitimately-sanitized Location whose path merely contains
+    `session`/`secret`/`token` as a segment (e.g. `/api/v2/sessions`) was falsely rejected
+    by its own gate -> URL-bearing headers are validated by `isSanitizedUrlField` first now.
+Pass 6 found the same path-param gap in the THIRD URL sanitizer:
+11. `sanitizeBrowserUrl` (the diagnostics-path sanitizer in `browserRedaction.ts`) was
+    missed by the round-5 fix — it stripped query/fragment/userinfo but kept
+    `;jsessionid=` path params, so a redirect session id surfaced verbatim through
+    persisted navigation diagnostics -> it now strips path params too (try-branch
+    `pathname` split + the two relative `[?#;&]` splits), matching its siblings.
+There are exactly THREE URL sanitizers (`sanitizeUrlPreview`, `sanitizeHeaderUrlValue`,
+`sanitizeBrowserUrl`) plus two origin-only `daemonClient` parsers (no path); all are now
+enumerated and consistent. Every RFC-3986 secret-carrying URL component (scheme,
+userinfo, query, fragment, path-params) is stripped; host + path segments are the
+intentional preview. Percent-encoded delimiters stay opaque path segments (by design,
+and consistent construction-vs-invariant). The browser ref/redaction/persistence/
+observation guard surface was re-swept by each independent probe. A SEVENTH independent
+pass returned CLEAN (no secret-leak — converged) and confirmed the URL-sanitizer class
+is closed by enumeration; one trivial in-intent follow-up was applied (PROFILE_LIKE now
+also redacts `file://` local paths in diagnostics, alongside `chrome://`/`ws://`/`devtools`).
+Tests: 169 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

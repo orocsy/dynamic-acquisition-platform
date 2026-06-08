@@ -10,6 +10,14 @@ const PROFILE_LIKE_VALUE_PATTERN =
 function sanitizeBrowserUrl(value: string): string {
   try {
     const parsed = new URL(value);
+    // http(s)-only, uniform with sanitizeUrlPreview / sanitizeHeaderUrlValue: a
+    // non-web scheme is a raw endpoint/path, not a page URL — drop it rather than
+    // keep scheme+host+path. (ws/wss/chrome/devtools are already wholesale-redacted
+    // upstream by PROFILE_LIKE_VALUE_PATTERN; this closes the ftp/other-scheme gap
+    // and keeps every URL sanitizer on one policy.)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return REDACTED;
+    }
     parsed.search = '';
     parsed.hash = '';
     // Strip userinfo too: `https://user:pass@host/...` must not retain `user:pass`.

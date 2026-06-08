@@ -153,3 +153,13 @@ test('redactBrowserDiagnosticData redacts extended credential keywords and obfus
   assert.equal(redactBrowserDiagnosticData({ note: 'token refresh scheduled' }).note, 'token refresh scheduled');
   assert.equal(redactBrowserDiagnosticData({ note: 'returned code=200 ok' }).note, 'returned code=200 ok');
 });
+
+// Sweep result: every URL sanitizer should be http(s)-only. ftp:// isn't covered by
+// the profile/ws denylist, so it exercises sanitizeBrowserUrl's scheme gate directly.
+test('redactBrowserDiagnosticData drops an embedded non-http(s) URL, not just its query', () => {
+  const out = redactBrowserDiagnosticData({ note: 'fetched ftp://host.example/dir/file?x=1 then done' });
+  assert.equal(out.note.includes('ftp://'), false, out.note);
+  assert.equal(out.note.includes('host.example'), false, out.note);
+  // http(s) URLs are still kept (query stripped)
+  assert.equal(redactBrowserDiagnosticData({ note: 'go https://ok.example/p?q=1' }).note, 'go https://ok.example/p');
+});

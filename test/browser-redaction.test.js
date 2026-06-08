@@ -433,3 +433,40 @@ test('redactBrowserDiagnosticData strips path params from a relative URL embedde
   // a clean relative path in prose is unchanged
   assert.equal(redactBrowserDiagnosticData({ note: 'went to /account/dashboard ok' }).note, 'went to /account/dashboard ok');
 });
+
+// Codex re-review #C (regression): the path-param strip mutated `out` before the
+// whole-string //host redaction, so `//host:port/...;sid=SECRET` kept the raw endpoint.
+// The //host check now runs BEFORE the strip.
+test('redactBrowserDiagnosticData redacts a whole-string scheme-relative //host with a path param', () => {
+  const note = '//127.0.0.1:9222/json/version;sid=SECRETSID';
+  assert.equal(redactBrowserDiagnosticData({ note }).note, '[redacted]');
+  assert.equal(redactBrowserDiagnosticData({ note }).note.includes('127.0.0.1'), false);
+  // a plain whole-string //host (no param) is still redacted
+  assert.equal(redactBrowserDiagnosticData({ note: '//x:y@host/path' }).note, '[redacted]');
+});
+
+// Codex re-review #A: opaque non-http schemes (data:/javascript:/mailto:/blob:/
+// chrome-extension:/file:, no //) embed an undelimitable payload — including forms the
+// in-place matcher truncated at `<>`. They are now redacted wholesale.
+test('redactBrowserDiagnosticData redacts opaque-scheme URLs wholesale (no partial leak)', () => {
+  for (const [note, secret] of [
+    ['email mailto:a@b.com?body=RAWSECRET now', 'RAWSECRET'],
+    ['x data:text/html,<script>RAWXSS</script> y', 'RAWXSS'],
+    ['run javascript:alert(RAWJS) ok', 'RAWJS'],
+    ['ext chrome-extension://abcdef/p.html', 'abcdef'],
+    ['local file:/etc/shadow leak', 'shadow'],
+  ])
+    assert.equal(redactBrowserDiagnosticData({ note }).note.includes(secret), false, `leaked ${secret}`);
+  // benign `data:`/`metadata:` mentions (space or glued word, no URL form) are kept
+  assert.equal(redactBrowserDiagnosticData({ note: 'the data: field and metadata: ok' }).note, 'the data: field and metadata: ok');
+});
+
+// Codex re-review #B: `pat` in the value-side credential pattern used `\b`, so
+// `github_pat=SECRET` (underscore is a word char) was not matched. It now uses the same
+// separator boundaries as the ref/key denylists.
+test('redactBrowserDiagnosticData redacts underscore-prefixed pat= assignments', () => {
+  assert.equal(redactBrowserDiagnosticData({ note: 'token github_pat=RAWPATVAL end' }).note, '[redacted]');
+  assert.equal(redactBrowserDiagnosticData({ note: 'cfg foo_pat: RAWPATVAL2 done' }).note, '[redacted]');
+  // a benign `path=` is NOT redacted (pat is only a prefix of path; separator-bounded)
+  assert.equal(redactBrowserDiagnosticData({ note: 'the path=/api/users is fine' }).note, 'the path=/api/users is fine');
+});

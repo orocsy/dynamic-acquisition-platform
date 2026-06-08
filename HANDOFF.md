@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **175 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **178 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -258,7 +258,15 @@ all fixed: (a) `CLEAN_ABSOLUTE_URL` forbade `@` everywhere, false-rejecting a le
 no `//`) in diagnostic prose -> matched and dropped via `sanitizeBrowserUrl`; (d) the
 path-param strip ran only whole-string, missing a relative URL embedded in prose
 (`/account;jsessionid=…`) -> stripped globally; (e) the ref denylist omitted
-`auth_code`/`session_id` (which the value side flags) -> added. Tests: 175 pass / 0 fail.
+`auth_code`/`session_id` (which the value side flags) -> added. A THIRD codex re-review
+then found three more in the diagnostic-string sanitizer: (a) the opaque-scheme matcher
+truncated at `<>` and missed `mailto:`, leaving partial payloads -> opaque schemes
+(`data:`/`javascript:`/`mailto:`/`blob:`/`chrome-extension:`/`file:`) are now redacted
+wholesale via `OPAQUE_URL_SCHEME_PATTERN`; (b) my path-param strip mutated `out` before
+the whole-string `//host` redaction, leaking the raw endpoint (a regression) -> the
+`//host` check runs BEFORE the strip; (c) `pat` in the value-side credential pattern used
+`\b`, missing `github_pat=` -> separator-bounded like the ref/key denylists.
+Tests: 178 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

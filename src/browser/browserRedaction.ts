@@ -40,7 +40,15 @@ function sanitizeBrowserUrl(value: string): string {
  * (the old `looksLikeUrl` gate) left that query in place. Each match is run
  * through `sanitizeBrowserUrl`, which strips query, fragment, and userinfo.
  */
-const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+|\b(?:data|javascript|vbscript|blob|filesystem|chrome-extension):[^\s"'<>]+/gi;
+const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+/gi;
+
+/**
+ * An opaque / non-hierarchical URL scheme in free-form prose. These have no clean `//`
+ * authority+path to sanitize in place — the payload after `:` is arbitrary (a data URI
+ * body, a `javascript:` script, a `mailto:` query) and can carry a secret that no URL
+ * parser delimits — so a diagnostic containing one is redacted wholesale.
+ */
+const OPAQUE_URL_SCHEME_PATTERN = /\b(?:data|javascript|vbscript|blob|filesystem|chrome-extension|mailto|file):[^\s]/i;
 
 /**
  * A credential *assignment* (`token=…`, `password: …`, `api_key=…`, …) or an auth
@@ -53,7 +61,7 @@ const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+|\b(?:data|jav
  * scheduled"`, `"authorization endpoint"`) does NOT match and is kept.
  */
 const CREDENTIAL_ASSIGNMENT_PATTERN =
-  /\b(?:authorization|password|passwd|pwd|secret|client[-_]?secret|private[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|jwt|api[-_]?key|apikey|x-api-key|pat|otp|mfa|signature|sig|csrf|xsrf|auth[-_]?code|session[-_]?id|cookie|set-cookie)\b\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
+  /\b(?:authorization|password|passwd|pwd|secret|client[-_]?secret|private[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|jwt|api[-_]?key|apikey|x-api-key|otp|mfa|signature|sig|csrf|xsrf|auth[-_]?code|session[-_]?id|cookie|set-cookie)\b\s*[:=]\s*\S|(?<![a-z0-9])pat(?![a-z0-9])\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
 
 /**
  * Fold a string to a canonical denylist VIEW (the returned value is never this —
@@ -79,14 +87,19 @@ function foldForDenylist(value: string): string {
  */
 function sanitizeStringForDiagnostics(value: string): string {
   let out = value.replace(ABSOLUTE_URL_PATTERN, (match) => sanitizeBrowserUrl(match));
+  // An opaque non-http(s) URL (data:/javascript:/mailto:/blob:/chrome-extension:/...,
+  // no clean // hierarchy) can embed an arbitrary secret-bearing payload that cannot be
+  // delimited (a partial match would leave a `<script>...` tail) -> redact wholesale.
+  if (OPAQUE_URL_SCHEME_PATTERN.test(out)) return REDACTED;
+  const wholeString = out === value && !/\s/.test(out);
+  // A whole-string scheme-relative `//host/...` is a raw endpoint -> redact it BEFORE the
+  // path-param strip below, which would otherwise mutate `out` and skip this check.
+  if (wholeString && out.startsWith('//')) return REDACTED;
   // Strip RFC-3986 path parameters (;jsessionid=..., stray &...) from ANY relative-path
   // token, whole-string OR embedded in prose -- a relative ref has no scheme for the
   // absolute-URL sanitizer, and jsessionid is not a credential-assignment keyword.
   out = out.replace(/(\/[^\s;&?#"'<>]*)[;&][^\s"'<>]*/g, '$1');
-  if (out === value && !/\s/.test(out)) {
-    // a whole-string scheme-relative `//host/...` can be a raw endpoint -> redact it.
-    // (ws/devtools/chrome are already wholesale-redacted upstream by PROFILE_LIKE.)
-    if (out.startsWith('//')) return REDACTED;
+  if (wholeString) {
     out = out.split(/[?#;&]/, 1)[0] || out;
   }
   // denylist check ONLY (see foldForDenylist): NFKD + strip invisible/format AND

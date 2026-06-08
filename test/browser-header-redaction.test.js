@@ -118,3 +118,54 @@ test('a sanitized Location preview passes the invariant check', () => {
   };
   assert.doesNotThrow(() => assertSafeBrowserObservation(observation));
 });
+
+// Review finding: a URL-bearing header with a non-http(s) scheme (a raw
+// ws/devtools/chrome endpoint) was kept with only its query stripped, leaking the
+// debugger URL. Now dropped at construction and rejected by the invariant — the
+// same http(s)-only policy as sanitizeUrlPreview.
+test('toSafeHeaderPreview drops a ws://devtools Location instead of keeping the endpoint', () => {
+  const preview = toSafeHeaderPreview({
+    Location: 'ws://127.0.0.1:9222/devtools/page/RAW?q=DROPME',
+  });
+  assert.equal(preview.location, '[redacted]');
+  const blob = JSON.stringify(preview);
+  assert.equal(blob.includes('ws://'), false);
+  assert.equal(blob.includes('devtools'), false);
+  assert.equal(blob.includes('DROPME'), false); // whole value dropped, query included
+});
+
+test('invariant rejects a Location with a non-http(s) scheme even after the query is stripped', () => {
+  for (const loc of [
+    'ws://127.0.0.1:9222/devtools/page/RAW',
+    'wss://127.0.0.1:9222/devtools/browser/RAW',
+    'chrome://version',
+    'devtools://devtools/page/RAW',
+  ]) {
+    assert.throws(
+      () =>
+        assertSafeBrowserObservation({
+          id: 'observation_nonhttp_location',
+          runId: 'run_browser_001',
+          source: 'cdp',
+          capturedAt: '2026-05-24T00:00:00.000Z',
+          response: { status: 302, headersPreview: { location: loc } },
+        }),
+      /must be redacted/,
+      `expected ${loc} rejected`,
+    );
+  }
+});
+
+test('a relative or http(s) Location still passes the invariant', () => {
+  for (const loc of ['/relative/path', 'https://example.com/ok']) {
+    assert.doesNotThrow(() =>
+      assertSafeBrowserObservation({
+        id: 'observation_ok_location',
+        runId: 'run_browser_001',
+        source: 'cdp',
+        capturedAt: '2026-05-24T00:00:00.000Z',
+        response: { status: 302, headersPreview: { location: loc } },
+      }),
+    );
+  }
+});

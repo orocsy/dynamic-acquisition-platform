@@ -86,6 +86,13 @@ const PRESENCE_ONLY_HEADER_ALLOWLIST = new Set<string>(['etag', 'content-disposi
 function sanitizeHeaderUrlValue(value: string): string {
   try {
     const parsed = new URL(value);
+    // Only http/https URL-bearing header values are kept. A non-web scheme
+    // (ws/wss/chrome/devtools/file/…) is a raw endpoint/path, not a page URL —
+    // drop it rather than keep the scheme with only the query stripped. Same
+    // http(s)-only policy as persistenceGuard's sanitizeUrlPreview.
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return REDACTED;
+    }
     parsed.search = '';
     parsed.hash = '';
     if (parsed.username || parsed.password) {
@@ -168,8 +175,15 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
       throw new Error(`browser observation header ${path}.${name} must be redacted`);
     }
     if (URL_BEARING_HEADER_ALLOWLIST.has(lowerName)) {
-      // a URL-bearing header value must already be sanitized (no query/fragment/userinfo)
-      if (/[?#]/.test(value) || /^[a-z]+:\/\/[^/]*@/i.test(value)) {
+      // A URL-bearing header value must already be sanitized: no query/fragment/
+      // userinfo, AND only http(s) (or a relative path) — never a raw ws/devtools/
+      // chrome endpoint that merely had its query stripped.
+      const schemeMatch = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value);
+      const nonHttpScheme =
+        schemeMatch !== null &&
+        schemeMatch[1].toLowerCase() !== 'http' &&
+        schemeMatch[1].toLowerCase() !== 'https';
+      if (/[?#]/.test(value) || /^[a-z]+:\/\/[^/]*@/i.test(value) || nonHttpScheme) {
         throw new Error(`browser observation header ${path}.${name} must be redacted`);
       }
       continue;

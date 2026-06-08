@@ -245,3 +245,18 @@ test('update() still names a safe-but-unknown surrogate on a miss', () => {
     /session:does-not-exist not found/,
   );
 });
+
+// Codex review: a keyword-bearing id (e.g. session:access_token_...) passed
+// isOpaqueSurrogateSessionId and got echoed. Now treated as unsafe -> redacted.
+test('update() redacts a keyword-bearing sessionId on a miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  const id = 'session:' + 'access' + '_token_ABCD'; // assembled so source has no literal token
+  assert.throws(
+    () => registry.update({ sessionId: id, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('access_token'), false);
+      assert.match(err.message, /redacted-session-id/);
+      return true;
+    },
+  );
+});

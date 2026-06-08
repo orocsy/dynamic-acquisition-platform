@@ -101,10 +101,11 @@ function sanitizeHeaderUrlValue(value: string): string {
     }
     return parsed.toString();
   } catch {
-    // relative or scheme-relative (`//host/...`) URL: drop query/fragment AND any
-    // userinfo (`//user:pass@host` -> `//host`), which `new URL` can't parse here.
-    const noQuery = value.split(/[?#]/, 1)[0];
-    return noQuery.replace(/^(\/\/)[^/@]*@/, '$1') || REDACTED;
+    // A scheme-relative `//host/...` carries a host:port (can be a raw
+    // `//127.0.0.1:9222/devtools/...` endpoint) and isn't explicit http(s) — drop it.
+    // A relative path (no host) is kept with its query stripped.
+    if (value.startsWith('//')) return REDACTED;
+    return value.split(/[?#]/, 1)[0] || REDACTED;
   }
 }
 
@@ -187,8 +188,11 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
         schemeMatch !== null &&
         schemeMatch[1].toLowerCase() !== 'http' &&
         schemeMatch[1].toLowerCase() !== 'https';
-      const hasUserinfo = /^[a-z][a-z0-9+.-]*:\/\/[^/]*@/i.test(value) || /^\/\/[^/]*@/.test(value);
-      if (/[?#]/.test(value) || hasUserinfo || nonHttpScheme) {
+      // Reject: query/fragment; a scheme-relative `//host/...` (carries a host:port
+      // that may be a raw endpoint, and is not explicit http(s)); absolute userinfo;
+      // or any explicit non-http(s) scheme (incl. opaque `javascript:`/`data:`).
+      const absoluteUserinfo = /^[a-z][a-z0-9+.-]*:\/\/[^/]*@/i.test(value);
+      if (/[?#]/.test(value) || value.startsWith('//') || absoluteUserinfo || nonHttpScheme) {
         throw new Error(`browser observation header ${path}.${name} must be redacted`);
       }
       continue;

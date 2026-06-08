@@ -173,8 +173,14 @@ test('a relative or http(s) Location still passes the invariant', () => {
 // Codex review: the invariant's scheme check only matched `scheme://`, so opaque
 // schemes (javascript:/data:/mailto:) and scheme-relative userinfo slipped past a
 // prebuilt observation. Construction drops them; the invariant must too.
-test('invariant rejects opaque non-http schemes and scheme-relative userinfo Location', () => {
-  for (const loc of ['javascript:alert(1)', 'data:text/html,raw', 'mailto:a@b.com', '//x:y@host/path']) {
+test('invariant rejects opaque non-http schemes and scheme-relative Locations', () => {
+  for (const loc of [
+    'javascript:alert(1)',
+    'data:text/html,raw',
+    'mailto:a@b.com',
+    '//x:y@host/path',
+    '//127.0.0.1:9222/devtools/browser/RAW', // scheme-relative devtools endpoint
+  ]) {
     assert.throws(
       () =>
         assertSafeBrowserObservation({
@@ -190,10 +196,14 @@ test('invariant rejects opaque non-http schemes and scheme-relative userinfo Loc
   }
 });
 
-test('construction drops opaque-scheme Locations and strips scheme-relative userinfo', () => {
-  for (const loc of ['javascript:alert(1)', 'data:text/html,raw', 'mailto:a@b.com']) {
+test('construction drops opaque-scheme and scheme-relative Locations', () => {
+  for (const loc of [
+    'javascript:alert(1)',
+    'data:text/html,raw',
+    'mailto:a@b.com',
+    '//x:y@host/path?q=1',
+    '//127.0.0.1:9222/devtools/browser/RAW',
+  ]) {
     assert.equal(toSafeHeaderPreview({ Location: loc }).location, '[redacted]');
   }
-  // a clean scheme-relative Location is kept, userinfo stripped
-  assert.equal(toSafeHeaderPreview({ Location: '//x:y@host/path?q=1' }).location, '//host/path');
 });

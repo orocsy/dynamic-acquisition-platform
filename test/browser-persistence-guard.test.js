@@ -176,13 +176,12 @@ test('guardSurrogateSessionId rejects whitespace / zero-width-smuggled surrogate
   assert.equal(guardSurrogateSessionId('sessionId', 'session:clean-1'), 'session:clean-1');
 });
 
-// Codex review: a scheme-relative URL (`//user:pass@host/...`) makes new URL throw,
-// so the fallback kept the userinfo. Must strip it.
-test('sanitizeUrlPreview strips userinfo from a scheme-relative URL', () => {
-  const out = sanitizeUrlPreview('//x:y@example.com/account?q=1');
-  assert.equal(out, '//example.com/account');
-  assert.equal(out.includes('x:y'), false);
-  const rec = toPersistableSessionRecord({ ...BASE, targetUrlPreview: '//x:y@example.com/account?q=1' });
-  assert.equal(rec.targetUrlPreview, '//example.com/account');
-  assert.equal(JSON.stringify(rec).includes('x:y'), false);
+// Codex review (round 2): a scheme-relative `//host/...` carries a host:port that can
+// be a raw devtools endpoint, so it is DROPPED entirely (salvaging it kept the endpoint).
+test('sanitizeUrlPreview drops scheme-relative URLs (incl. devtools), keeps relative paths', () => {
+  assert.equal(sanitizeUrlPreview('//x:y@example.com/account?q=1'), undefined);
+  assert.equal(sanitizeUrlPreview('//127.0.0.1:9222/devtools/browser/RAW?q=1'), undefined);
+  assert.equal(sanitizeUrlPreview('/account?q=1'), '/account'); // relative path (no host) kept
+  const rec = toPersistableSessionRecord({ ...BASE, targetUrlPreview: '//127.0.0.1:9222/devtools/browser/RAW' });
+  assert.equal(rec.targetUrlPreview, undefined);
 });

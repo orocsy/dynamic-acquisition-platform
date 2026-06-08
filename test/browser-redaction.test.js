@@ -164,9 +164,21 @@ test('redactBrowserDiagnosticData drops an embedded non-http(s) URL, not just it
   assert.equal(redactBrowserDiagnosticData({ note: 'go https://ok.example/p?q=1' }).note, 'go https://ok.example/p');
 });
 
-// Codex review (sibling): a whole-string scheme-relative ref kept its userinfo.
-test('redactBrowserDiagnosticData strips userinfo from a scheme-relative URL', () => {
-  const out = redactBrowserDiagnosticData({ note: '//x:y@host.example/path?q=1' });
-  assert.equal(out.note, '//host.example/path');
-  assert.equal(out.note.includes('x:y'), false);
+// Codex review (round 2): a whole-string scheme-relative `//host` can be a raw
+// endpoint, so it is redacted (salvaging it kept the host:port).
+test('redactBrowserDiagnosticData redacts a whole-string scheme-relative URL', () => {
+  assert.equal(redactBrowserDiagnosticData({ note: '//x:y@host.example/path?q=1' }).note, '[redacted]');
+  assert.equal(redactBrowserDiagnosticData({ note: '//127.0.0.1:9222/devtools/browser/RAW' }).note, '[redacted]');
+});
+
+// Codex review (round 2): BROWSER_REF_UNSAFE_PATTERN missed token/jwt-style words,
+// so a `session:access_token_...` id passed isOpaqueSurrogateSessionId and got
+// echoed by the registry. The root predicate now rejects them.
+test('isOpaqueBrowserRef rejects credential-keyword-bearing refs', () => {
+  for (const bad of ['session:a-token-b', 'page:x-jwt-y', 'd-credential-e', 'r-csrf-1', 'q-private-key-z']) {
+    assert.equal(isOpaqueBrowserRef(bad), false, `expected ${bad} rejected`);
+  }
+  // clean uuid-style refs still pass
+  assert.equal(isOpaqueBrowserRef('session:1a2b-3c4d'), true);
+  assert.equal(isOpaqueBrowserRef('page:abc-123'), true);
 });

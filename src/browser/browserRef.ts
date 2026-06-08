@@ -2,7 +2,7 @@ import type { BrowserSessionRef } from '../runtime';
 import type { BrowserSessionRefParts } from './types';
 
 const BROWSER_REF_UNSAFE_PATTERN =
-  /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|\b(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/)\b)/i;
+  /(?:^\/|^~\/|^[a-z]:[\\/]|[\\/]|[?&#=]|\b(?:cookie|authorization|bearer|set-cookie|profile|user-data-dir|password|secret|api[-_]?key|mfa|otp|captcha|websocket|devtools|chrome:\/\/|ws:\/\/|wss:\/\/|http:\/\/|https:\/\/)\b|(?:token|jwt|credential|private[-_]?key|csrf|xsrf))/i;
 
 // Whitespace (the `\s` class, incl. NBSP and line breaks), C0/C1 control chars,
 // and zero-width / bidi format chars. `\ufeff` (BOM/ZWNBSP) is already part of `\s`.

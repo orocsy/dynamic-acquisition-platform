@@ -136,11 +136,12 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     parsed.password = '';
     return parsed.toString();
   } catch {
-    // Relative or scheme-relative (`//host/...`) URL: `new URL` throws on these, so
-    // strip query/fragment AND any userinfo (`//user:pass@host` -> `//host`) — the
-    // bare split kept the credentials.
-    const noQuery = value.split(/[?#]/, 1)[0];
-    return noQuery.replace(/^(\/\/)[^/@]*@/, '$1') || undefined;
+    // Not an absolute URL. A scheme-relative `//host/...` carries a host:port that
+    // can be a raw endpoint (a `//127.0.0.1:9222/devtools/...` debugger socket) and
+    // is NOT an explicit http(s) URL — drop it (salvaging it kept the endpoint). A
+    // relative path (`/path`, no host) is kept with its query stripped.
+    if (value.trim().startsWith('//')) return undefined;
+    return value.split(/[?#]/, 1)[0] || undefined;
   }
 }
 

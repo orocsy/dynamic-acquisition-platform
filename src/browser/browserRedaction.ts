@@ -7,41 +7,6 @@ const BROWSER_REF_KEY_PATTERN = /(?:browserSessionRef|pageTargetRef|browserDaemo
 const PROFILE_LIKE_VALUE_PATTERN =
   /(?:^~\/|^[a-z]:[\\/]|^\/(?:Users|Applications|Volumes|private|tmp|var|Library)\b|[\\/](?:Library|Application Support|Google|Chrome|Chromium)[\\/]|user-data-dir|\bprofile\b|chrome:\/\/|devtools|ws:\/\/|wss:\/\/|file:\/\/)/i;
 
-function sanitizeBrowserUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    // http(s)-only, uniform with sanitizeUrlPreview / sanitizeHeaderUrlValue: a
-    // non-web scheme is a raw endpoint/path, not a page URL — drop it rather than
-    // keep scheme+host+path. (ws/wss/chrome/devtools are already wholesale-redacted
-    // upstream by PROFILE_LIKE_VALUE_PATTERN; this closes the ftp/other-scheme gap
-    // and keeps every URL sanitizer on one policy.)
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return REDACTED;
-    }
-    parsed.search = '';
-    parsed.hash = '';
-    // Strip userinfo too: `https://user:pass@host/...` must not retain `user:pass`.
-    parsed.username = '';
-    parsed.password = '';
-    // ...and RFC-3986 path parameters (`;jsessionid=…`, stray `&…`): same path-param
-    // strip as sanitizeUrlPreview / sanitizeHeaderUrlValue, so a redirect session id in
-    // a diagnostic URL never surfaces (they live in pathname, not search).
-    parsed.pathname = parsed.pathname.split(/[;&]/)[0];
-    return parsed.toString();
-  } catch {
-    return value.split(/[?#;&]/, 1)[0] || value;
-  }
-}
-
-/**
- * Matches an absolute URL *anywhere* inside a string, not only one that is the
- * whole string. A diagnostic like `"redirected to https://idp…?token=SECRET then
- * back"` carries its secret mid-sentence, so sanitizing only whole-string URLs
- * (the old `looksLikeUrl` gate) left that query in place. Each match is run
- * through `sanitizeBrowserUrl`, which strips query, fragment, and userinfo.
- */
-const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+/gi;
-
 /**
  * An opaque / non-hierarchical URL scheme in free-form prose. These have no clean `//`
  * authority+path to sanitize in place — the payload after `:` is arbitrary (a data URI
@@ -78,37 +43,34 @@ function foldForDenylist(value: string): string {
 }
 
 /**
- * Strip secrets from a free-form diagnostic string. URLs are handled precisely
- * (they CAN be delimited): absolute URLs are sanitized in place wherever they
- * appear, and a whole-string relative/schemeless ref carrying a query/fragment is
- * trimmed at the first delimiter. After that, if a credential assignment or auth
- * scheme still survives in the prose, the string is redacted wholesale — see
- * `CREDENTIAL_ASSIGNMENT_PATTERN` for why surgical excision is unsafe there.
+ * A diagnostic value is "risky" if it embeds a URL or endpoint token: any `scheme://`,
+ * a scheme-relative `//host`, or a relative path carrying a `?`/`#`/`;`/`&` delimiter (a
+ * query, fragment, or matrix/path parameter -- the parts a secret rides in). A bare path
+ * with no delimiter (a route like `/api/users`) and plain prose are NOT risky.
+ */
+const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?:^|\s)\/\/[^\s"'<>]|(?:^|\s)\/[^\s"'<>]*[?#;&]/i;
+
+/**
+ * Aggressive defense-in-depth for a free-form diagnostic string. Sanitizing a URL or
+ * endpoint IN PLACE is a long tail of edge cases -- a secret can ride in a query,
+ * fragment, matrix/path parameter, userinfo, an opaque-scheme body (data:/javascript:/
+ * mailto:), or a scheme-relative host -- so we do NOT try. Instead, if the value contains
+ * ANY URL/endpoint token (RISKY_DIAGNOSTIC_PATTERN or an opaque scheme) OR a credential
+ * assignment / auth-scheme value, the WHOLE string is redacted. Diagnostics are debug
+ * context, not a data channel; losing a string to guarantee no secret ever surfaces is
+ * the right trade. A bare path and plain prose are kept.
  */
 function sanitizeStringForDiagnostics(value: string): string {
-  let out = value.replace(ABSOLUTE_URL_PATTERN, (match) => sanitizeBrowserUrl(match));
-  // An opaque non-http(s) URL (data:/javascript:/mailto:/blob:/chrome-extension:/...,
-  // no clean // hierarchy) can embed an arbitrary secret-bearing payload that cannot be
-  // delimited (a partial match would leave a `<script>...` tail) -> redact wholesale.
-  if (OPAQUE_URL_SCHEME_PATTERN.test(out)) return REDACTED;
-  // Scheme-relative `//host/...` endpoints, whole-string OR embedded in prose, are raw
-  // endpoints with no scheme to sanitize -> drop the token. The `(^|\s)` anchor leaves a
-  // real `https://...` (already sanitized above; its `//` follows a `:`) and a path `//`
-  // untouched, and requiring a non-space host char after `//` skips a `// comment`.
-  out = out.replace(/(^|\s)\/\/[^\s"'<>]+/g, `$1${REDACTED}`);
-  // Strip query, fragment, AND path parameters from any relative-path token, whole-string
-  // OR embedded in prose (`/cb?code=...`, `/p#...`, `/p;jsessionid=...`, `/p&...` -> `/p`):
-  // a relative ref has no scheme for the absolute sanitizer, and its delimiter values (an
-  // OAuth `code`, a `jsessionid`) are not credential-assignment keywords.
-  out = out.replace(/(\/[^\s?#;&"'<>]*)[?#;&][^\s"'<>]*/g, '$1');
-  // denylist check ONLY (see foldForDenylist): NFKD + strip invisible/format AND
-  // combining-mark chars, so zero-width / full-width / accent splits all collapse to
-  // the bare keyword. The returned value stays the original `out`.
-  const denylistView = foldForDenylist(out);
+  if (RISKY_DIAGNOSTIC_PATTERN.test(value) || OPAQUE_URL_SCHEME_PATTERN.test(value)) {
+    return REDACTED;
+  }
+  // A credential assignment / auth-scheme value in prose, folded to defeat full-width /
+  // combining-mark smuggling -> redact wholesale; see CREDENTIAL_ASSIGNMENT_PATTERN.
+  const denylistView = foldForDenylist(value);
   if (CREDENTIAL_ASSIGNMENT_PATTERN.test(denylistView)) {
     return REDACTED;
   }
-  return out;
+  return value;
 }
 
 function shouldRedactKey(key: string): boolean {

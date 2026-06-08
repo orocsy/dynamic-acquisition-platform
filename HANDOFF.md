@@ -275,6 +275,22 @@ short `sig` marker -> added (alnum-bounded, so `design`/`signal`/`assign` are no
 positives). The whole-string `wholeString` special-casing was removed — relative URLs are
 now handled identically whether whole-string or embedded. Tests: 180 pass / 0 fail.
 
+**After four codex re-review rounds all landing in the one free-form diagnostic-string
+sanitizer (a whack-a-mole — in-place sanitizing of arbitrary prose is a long tail of URL
+shapes), `sanitizeStringForDiagnostics` was REDESIGNED (operator decision) to be
+aggressive instead of surgical:** if a diagnostic value contains ANY URL/endpoint token
+(`scheme://`, a scheme-relative `//host`, or a relative path with a `?`/`#`/`;`/`&`
+delimiter — `RISKY_DIAGNOSTIC_PATTERN`), an opaque scheme (`OPAQUE_URL_SCHEME_PATTERN`),
+or a credential assignment / auth-scheme value (`CREDENTIAL_ASSIGNMENT_PATTERN` on the
+NFKD-folded view), the WHOLE string is redacted to `[redacted]`. A bare path (a route
+like `/api/users`, no delimiter) and plain prose are kept. This trades diagnostic context
+for a guarantee that no secret can ever surface — diagnostics are debug context, not a
+data channel. The in-place helpers (`sanitizeBrowserUrl`, `ABSOLUTE_URL_PATTERN`) were
+deleted. This ends the diagnostic-sanitizer edge-case hunt by construction. (The persisted
+checkpoint data — refs, `targetUrlPreview`, observation invariant — is unchanged and stays
+the precise, enumeration-verified path; only the lossy *diagnostic* layer went aggressive.)
+Tests: 180 pass / 0 fail.
+
 ## Design decisions already locked (don't relitigate)
 
 - Real adapter is **raw CDP**, not Playwright. `playwright` stays in the

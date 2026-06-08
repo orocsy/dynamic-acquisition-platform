@@ -32,14 +32,16 @@ test('browser redaction masks query values and credential-like fields recursivel
     },
   });
 
-  assert.equal(redacted.url, 'https://example.com/account');
+  // Aggressive diagnostic policy: any value carrying a URL/endpoint/credential token is
+  // redacted wholesale (no in-place URL sanitizing), so the secret-bearing URL -> [redacted].
+  assert.equal(redacted.url, '[redacted]');
   assert.equal(redacted.nested.cookie, '[redacted]');
   assert.equal(redacted.nested.authorization, '[redacted]');
   assert.equal(redacted.nested.setCookie, '[redacted]');
   assert.equal(redacted.nested.profilePath, '[redacted]');
   assert.equal(redacted.nested.absoluteProfilePath, '[redacted]');
   assert.equal(redacted.nested.headersPreview.cookie, '[redacted]');
-  assert.deepEqual(redacted.nested.urls, ['https://example.com/api', '/api/resource']);
+  assert.deepEqual(redacted.nested.urls, ['[redacted]', '[redacted]']);
   assert.equal(
     containsUnsafeBrowserData(redacted, [rawCookie, rawAuthorization, rawProfilePath, rawAbsoluteProfilePath, 'secret', 'raw-set-cookie']),
     false,
@@ -154,14 +156,16 @@ test('redactBrowserDiagnosticData redacts extended credential keywords and obfus
   assert.equal(redactBrowserDiagnosticData({ note: 'returned code=200 ok' }).note, 'returned code=200 ok');
 });
 
-// Sweep result: every URL sanitizer should be http(s)-only. ftp:// isn't covered by
-// the profile/ws denylist, so it exercises sanitizeBrowserUrl's scheme gate directly.
-test('redactBrowserDiagnosticData drops an embedded non-http(s) URL, not just its query', () => {
+// Aggressive policy: a diagnostic string containing ANY URL (any scheme) is redacted
+// wholesale, so neither the scheme nor the host survives.
+test('redactBrowserDiagnosticData redacts a diagnostic containing any URL wholesale', () => {
   const out = redactBrowserDiagnosticData({ note: 'fetched ftp://host.example/dir/file?x=1 then done' });
-  assert.equal(out.note.includes('ftp://'), false, out.note);
+  assert.equal(out.note, '[redacted]');
   assert.equal(out.note.includes('host.example'), false, out.note);
-  // http(s) URLs are still kept (query stripped)
-  assert.equal(redactBrowserDiagnosticData({ note: 'go https://ok.example/p?q=1' }).note, 'go https://ok.example/p');
+  // even a clean http(s) URL is redacted (no in-place sanitizing) -- diagnostics are debug
+  // context, not a data channel; a URL can never surface
+  assert.equal(redactBrowserDiagnosticData({ note: 'go https://ok.example/p?q=1' }).note, '[redacted]');
+  assert.equal(redactBrowserDiagnosticData({ note: 'navigated to https://app.test/login' }).note, '[redacted]');
 });
 
 // Codex review (round 2): a whole-string scheme-relative `//host` can be a raw
@@ -338,18 +342,18 @@ test('redactBrowserDiagnosticData redacts a secret under a fold-disguised sensit
 // THIRD sanitizer) was missed by the path-param fix; it stripped query/fragment/userinfo
 // but kept `;jsessionid=` path params, so a redirect session id surfaced verbatim in a
 // navigation diagnostic. It now strips path params like its two siblings.
-test('redactBrowserDiagnosticData strips matrix/path params (;jsessionid=) from diagnostic URLs', () => {
+test('redactBrowserDiagnosticData redacts diagnostics carrying matrix/path params', () => {
   const raw = 'jsessionid=9F8E7D6C5B4A39281706';
-  // absolute URL embedded mid-string: path param dropped, base URL kept
-  const a = redactBrowserDiagnosticData({ note: 'redirected to https://app.test/dashboard;' + raw + ' then back' });
-  assert.equal(a.note.includes('9F8E7D6C5B4A39281706'), false, a.note);
-  assert.equal(a.note.includes('https://app.test/dashboard'), true, a.note);
-  // whole-string relative ref: truncated at the path-param delimiter
-  assert.equal(redactBrowserDiagnosticData({ note: '/account/dashboard;' + raw }).note, '/account/dashboard');
-  // stray &-param too
+  // any URL, or a relative path with a ;jsessionid=/&code= parameter, -> whole [redacted]
+  for (const note of [
+    'redirected to https://app.test/dashboard;' + raw + ' then back',
+    '/account/dashboard;' + raw,
+    'go https://app.test/cb&code=AUTHCODE',
+  ])
+    assert.equal(redactBrowserDiagnosticData({ note }).note, '[redacted]', note);
+  // the session id / auth code can never surface
+  assert.equal(redactBrowserDiagnosticData({ note: 'x https://app.test/d;' + raw }).note.includes('9F8E7D6C5B4A39281706'), false);
   assert.equal(redactBrowserDiagnosticData({ note: 'go https://app.test/cb&code=AUTHCODE' }).note.includes('AUTHCODE'), false);
-  // a clean URL with no params is unchanged
-  assert.equal(redactBrowserDiagnosticData({ note: 'at https://app.test/dashboard' }).note, 'at https://app.test/dashboard');
 });
 
 // Seventh review (trivial in-intent gap): PROFILE_LIKE_VALUE_PATTERN redacted
@@ -359,8 +363,8 @@ test('redactBrowserDiagnosticData strips matrix/path params (;jsessionid=) from 
 test('redactBrowserDiagnosticData redacts a file:// local path', () => {
   assert.equal(redactBrowserDiagnosticData({ note: 'file:///Users/me/.aws/credentials' }).note, '[redacted]');
   assert.equal(redactBrowserDiagnosticData({ note: 'tried file:///etc/passwd then gave up' }).note, '[redacted]');
-  // a normal http(s) URL is unaffected by the file:// rule
-  assert.equal(redactBrowserDiagnosticData({ note: 'at https://app.test/home' }).note, 'at https://app.test/home');
+  // a bare path (no scheme/delimiter) and plain prose are kept; only URL/endpoint tokens redact
+  assert.equal(redactBrowserDiagnosticData({ note: 'wrote to /tmp/cache/file ok' }).note, 'wrote to /tmp/cache/file ok');
 });
 
 // Codex re-review (P2): the substring keyword group rejected legit ids that merely
@@ -422,15 +426,12 @@ test('redactBrowserDiagnosticData drops opaque non-http URL schemes in prose', (
   assert.equal(redactBrowserDiagnosticData({ note: 'the data: field shows metadata: x' }).note, 'the data: field shows metadata: x');
 });
 
-// Codex re-review #4: path-param stripping only ran for whole-string relative values; a
-// relative URL embedded in prose (with spaces) kept its ;jsessionid=. Now stripped globally.
-test('redactBrowserDiagnosticData strips path params from a relative URL embedded in prose', () => {
-  assert.equal(
-    redactBrowserDiagnosticData({ note: 'redirected to /account;jsessionid=SECRETSID then back' }).note,
-    'redirected to /account then back',
-  );
+// Codex re-review #4 -> under the aggressive policy a relative URL with a query/param,
+// whole-string OR embedded in prose, redacts the whole string; a bare path is kept.
+test('redactBrowserDiagnosticData redacts a relative URL with a param embedded in prose', () => {
+  assert.equal(redactBrowserDiagnosticData({ note: 'redirected to /account;jsessionid=SECRETSID then back' }).note, '[redacted]');
   assert.equal(redactBrowserDiagnosticData({ note: 'hit /cb&code=RAWCODE next' }).note.includes('RAWCODE'), false);
-  // a clean relative path in prose is unchanged
+  // a clean relative path (no delimiter) in prose is kept
   assert.equal(redactBrowserDiagnosticData({ note: 'went to /account/dashboard ok' }).note, 'went to /account/dashboard ok');
 });
 
@@ -475,21 +476,23 @@ test('redactBrowserDiagnosticData redacts underscore-prefixed pat= assignments',
 // values were only handled for whole-string values; embedded in prose they leaked. Both
 // are now handled globally (the //host token dropped, the ?/#/;/& tail stripped).
 test('redactBrowserDiagnosticData redacts embedded scheme-relative endpoints and relative query/fragment', () => {
-  assert.equal(
-    redactBrowserDiagnosticData({ note: 'opened //127.0.0.1:9222/json/version before retry' }).note,
-    'opened [redacted] before retry',
-  );
-  assert.equal(
-    redactBrowserDiagnosticData({ note: 'redirected to /oauth2/callback?code=RAWCODE then back' }).note,
-    'redirected to /oauth2/callback then back',
-  );
+  // an embedded //host or a relative path with ?/#/;/& -> whole string redacted
+  for (const note of [
+    'opened //127.0.0.1:9222/json/version before retry',
+    'redirected to /oauth2/callback?code=RAWCODE then back',
+    'see /sso?ticket=RAWTICKET now',
+    'frag /cb#id_token=RAWTOK end',
+    'ep //10.0.0.1:9222/devtools/page/X done',
+  ])
+    assert.equal(redactBrowserDiagnosticData({ note }).note, '[redacted]', note);
+  // the secrets never surface
   for (const [note, secret] of [
+    ['redirected to /oauth2/callback?code=RAWCODE then back', 'RAWCODE'],
     ['see /sso?ticket=RAWTICKET now', 'RAWTICKET'],
-    ['frag /cb#id_token=RAWTOK end', 'RAWTOK'],
     ['ep //10.0.0.1:9222/devtools/page/X done', '10.0.0.1'],
   ])
     assert.equal(redactBrowserDiagnosticData({ note }).note.includes(secret), false, `leaked ${secret}`);
-  // a `// comment` (space after //) and a clean relative path are NOT touched
+  // a `// comment` (space after //) and a clean bare path are NOT touched
   assert.equal(redactBrowserDiagnosticData({ note: 'see // TODO and /api/v2/users ok' }).note, 'see // TODO and /api/v2/users ok');
 });
 

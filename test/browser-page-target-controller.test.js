@@ -313,8 +313,9 @@ test('navigation diagnostics scrub secrets in embedded URLs and userinfo', async
   assert.equal(blob.includes('EMBEDSECRET'), false);
   assert.equal(blob.includes('PWLEAK'), false);
   assert.equal(blob.includes('carol:PWLEAK'), false);
-  // the non-secret part of the diagnostic survives — it is still a useful signal
-  assert.equal(blob.includes('idp.example.com/authorize'), true);
+  // aggressive policy: a diagnostic carrying a URL is redacted wholesale, so even the host
+  // does not survive — diagnostics are debug context, not a data channel
+  assert.equal(blob.includes('idp.example.com'), false);
 });
 
 // Round-6 #1: a secret can sit in free-form prose with no URL and no sensitive

@@ -566,3 +566,24 @@ test('redactBrowserDiagnosticData redacts a relative URL with an encoded delimit
   // a benign `%20` (space) and a bare path are kept
   assert.equal(redactBrowserDiagnosticData({ note: 'file name%20test and /api/users ok' }).note, 'file name%20test and /api/users ok');
 });
+
+// Codex re-review (round 8) #1: a snake_case credential key with a `_ref` suffix
+// (jwt_ref/pat_ref) was exempted by the over-broad ref-key pattern, so its value leaked.
+// The ref-key exemption is now camelCase `…Ref`/`…Id` only.
+test('redactBrowserDiagnosticData redacts credential keys with a _ref suffix, keeps camelCase ref keys', () => {
+  for (const k of ['jwt_ref', 'pat_ref', 'csrf_ref', 'auth_code_ref'])
+    assert.equal(redactBrowserDiagnosticData({ [k]: 'bareOpaqueSecretValue' })[k], '[redacted]', `key ${k}`);
+  // legit camelCase ref/id keys keep their opaque value (validated, not redacted)
+  assert.equal(redactBrowserDiagnosticData({ browserSessionRef: 'daemon:d_1:session:r_1' }).browserSessionRef, 'daemon:d_1:session:r_1');
+  assert.equal(redactBrowserDiagnosticData({ pageTargetRef: 'page:t-1' }).pageTargetRef, 'page:t-1');
+  assert.equal(redactBrowserDiagnosticData({ daemonId: 'daemon_local_1' }).daemonId, 'daemon_local_1');
+});
+
+// Codex re-review #2: a slashless special-scheme URL (`http:example.com/cb?code=…`, which
+// new URL still parses as absolute) escaped the `://`-only risky-URL detector.
+test('redactBrowserDiagnosticData redacts a slashless special-scheme URL in prose', () => {
+  for (const note of ['redirected to http:example.com/callback?code=RAWCODE then', 'go ftp:host.example/dir/x', 'open https:site.example/p?t=RAWT'])
+    assert.equal(redactBrowserDiagnosticData({ note }).note, '[redacted]', note);
+  // a bare `http:` mention (no URL body) is kept
+  assert.equal(redactBrowserDiagnosticData({ note: 'the http: protocol section here' }).note, 'the http: protocol section here');
+});

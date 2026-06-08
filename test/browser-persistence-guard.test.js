@@ -299,3 +299,17 @@ test('sanitizeUrlPreview drops every loopback host spelling and encoded-delimite
   assert.equal(sanitizeUrlPreview('https://api.example.com/json/version'), 'https://api.example.com/json/version');
   assert.equal(sanitizeUrlPreview('/account/dashboard'), '/account/dashboard');
 });
+
+// Codex re-review (round 8) #3: an IPv4-mapped IPv6 loopback (`[::ffff:127.0.0.1]`, which
+// new URL canonicalizes to `::ffff:7f00:1`) was not recognized as loopback, so its CDP
+// endpoint persisted. isLoopbackHost now recognizes the mapped form.
+test('sanitizeUrlPreview drops an IPv4-mapped IPv6 loopback CDP endpoint', () => {
+  for (const u of [
+    'http://[::ffff:127.0.0.1]:9222/devtools/browser/RAW',
+    'http://[::ffff:7f00:1]:9222/json/version',
+    'http://[::ffff:127.1.2.3]:9222/x',
+  ])
+    assert.equal(sanitizeUrlPreview(u), undefined, `expected dropped: ${u}`);
+  // a public IPv6 host is not loopback -> kept
+  assert.equal(sanitizeUrlPreview('https://[2606:4700::1111]/json/version'), 'https://[2606:4700::1111]/json/version');
+});

@@ -3,7 +3,11 @@ import { isOpaqueBrowserRef } from './browserRef';
 const REDACTED = '[redacted]';
 const SENSITIVE_KEY_PATTERN =
   /(?:password|passwd|pwd|secret|authorization|cookie|set-cookie|api[-_]?key|token|mfa|otp|captcha|credential|session|profile|user-data-dir|jwt|csrf|xsrf|signature|private[-_]?key|auth[-_]?code|bearer|client[-_]?secret|(?<![a-z0-9])pat(?![a-z0-9]))/i;
-const BROWSER_REF_KEY_PATTERN = /(?:browserSessionRef|pageTargetRef|browserDaemonRef|browserObservationId|daemonId|targetRef|ref)$/i;
+// A key naming an operational browser ref/id whose value is an opaque handle to keep
+// (validated by isOpaqueBrowserRef), NOT a credential. Matched case-sensitively as a
+// camelCase `…Ref`/`…Id` suffix so a snake_case credential key like `jwt_ref`/`pat_ref`
+// is NOT exempted from redaction (it falls through to SENSITIVE_KEY_PATTERN).
+const BROWSER_REF_KEY_PATTERN = /(?:[A-Za-z]+Ref|[A-Za-z]+Id)$/;
 const PROFILE_LIKE_VALUE_PATTERN =
   /(?:^~\/|^[a-z]:[\\/]|^\/(?:Users|Applications|Volumes|private|tmp|var|Library)\b|[\\/](?:Library|Application Support|Google|Chrome|Chromium)[\\/]|user-data-dir|\bprofile\b|chrome:\/\/|devtools|ws:\/\/|wss:\/\/|file:\/\/)/i;
 
@@ -48,7 +52,7 @@ function foldForDenylist(value: string): string {
  * query, fragment, or matrix/path parameter -- the parts a secret rides in). A bare path
  * with no delimiter (a route like `/api/users`) and plain prose are NOT risky.
  */
-const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?<![a-z0-9])\/\/[^\s"'<>]|(?<![a-z0-9])\/[^\s"'<>]*(?:[?#;&]|%3[bf]|%26|%23)/i;
+const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?<![a-z0-9])(?:https?|ftp|wss?):[^\s"'<>]|(?<![a-z0-9])\/\/[^\s"'<>]|(?<![a-z0-9])\/[^\s"'<>]*(?:[?#;&]|%3[bf]|%26|%23)/i;
 
 /**
  * Aggressive defense-in-depth for a free-form diagnostic string. Sanitizing a URL or

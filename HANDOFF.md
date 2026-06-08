@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **191 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **194 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -331,6 +331,17 @@ delimiter (`%3B`/`%26`/`%3F`/`%23`). The invariant now PARSES the value (not a r
 regex) to get the canonicalized host. The diagnostic `RISKY_DIAGNOSTIC_PATTERN` also gained
 the encoded-delimiter forms. This removes the host-spelling / percent-decode edge-case
 surface entirely. Tests: 191 pass / 0 fail.
+
+**An EIGHTH codex re-review found three DISTINCT (not encoding-tail) findings, all fixed:**
+(1) `shouldRedactKey` exempted any key ending in `ref`, so a snake_case credential key
+`jwt_ref`/`pat_ref` leaked its value -> `BROWSER_REF_KEY_PATTERN` narrowed to a camelCase
+`…Ref`/`…Id` suffix (case-sensitive), so snake `_ref` credential keys fall through to the
+SENSITIVE check while legit `browserSessionRef`/`daemonId` stay exempt; (2) a slashless
+special-scheme URL (`http:example.com/cb?code=…`, which `new URL` still parses as absolute)
+escaped the `://`-only `RISKY_DIAGNOSTIC_PATTERN` -> added a `(?<![a-z0-9])(?:https?|ftp|wss?):`
+alternative; (3) an IPv4-mapped IPv6 loopback (`[::ffff:127.0.0.1]` -> canonicalized
+`::ffff:7f00:1`) wasn't recognized -> `isLoopbackHost` now matches `::ffff:127.x` and
+`::ffff:7fxx:` forms. Tests: 194 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

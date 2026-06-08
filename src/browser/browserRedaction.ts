@@ -2,12 +2,13 @@ import { isOpaqueBrowserRef } from './browserRef';
 
 const REDACTED = '[redacted]';
 const SENSITIVE_KEY_PATTERN =
-  /(?:password|passwd|pwd|secret|authorization|cookie|set-cookie|api[-_]?key|token|mfa|otp|captcha|credential|session|profile|user-data-dir|jwt|csrf|xsrf|signature|private[-_]?key|auth[-_]?code|bearer|client[-_]?secret|(?<![a-z0-9])pat(?![a-z0-9]))/i;
-// A key naming an operational browser ref/id whose value is an opaque handle to keep
-// (validated by isOpaqueBrowserRef), NOT a credential. Matched case-sensitively as a
-// camelCase `…Ref`/`…Id` suffix so a snake_case credential key like `jwt_ref`/`pat_ref`
-// is NOT exempted from redaction (it falls through to SENSITIVE_KEY_PATTERN).
-const BROWSER_REF_KEY_PATTERN = /(?:[A-Za-z]+Ref|[A-Za-z]+Id)$/;
+  /(?:password|passwd|pwd|secret|authorization|cookie|set-cookie|api[-_]?key|token|mfa|otp|captcha|credential|session|profile|user-data-dir|jwt|csrf|xsrf|signature|private[-_]?key|auth[-_]?code|bearer|client[-_]?secret|(?<![a-z0-9])pat(?![a-z0-9])|(?<![a-z0-9])sig(?![a-z0-9]))/i;
+// The EXACT set of keys naming an operational browser ref/id whose value is an opaque
+// handle to keep (validated by isOpaqueBrowserRef), NOT a credential. An exact allow-list,
+// not a `*Ref`/`*Id` suffix, so a credential-marker key that merely ends in Ref/Id
+// (`jwtRef`, `sessionId`, `authorizationId`, `jwt_ref`) is NOT exempted -- it falls through
+// to SENSITIVE_KEY_PATTERN and is redacted.
+const BROWSER_REF_KEY_PATTERN = /^(?:browserSessionRef|pageTargetRef|browserDaemonRef|browserObservationId|daemonId|targetRef)$/;
 const PROFILE_LIKE_VALUE_PATTERN =
   /(?:^~\/|^[a-z]:[\\/]|^\/(?:Users|Applications|Volumes|private|tmp|var|Library)\b|[\\/](?:Library|Application Support|Google|Chrome|Chromium)[\\/]|user-data-dir|\bprofile\b|chrome:\/\/|devtools|ws:\/\/|wss:\/\/|file:\/\/)/i;
 

@@ -313,3 +313,12 @@ test('sanitizeUrlPreview drops an IPv4-mapped IPv6 loopback CDP endpoint', () =>
   // a public IPv6 host is not loopback -> kept
   assert.equal(sanitizeUrlPreview('https://[2606:4700::1111]/json/version'), 'https://[2606:4700::1111]/json/version');
 });
+
+// Codex re-review (round 9) #3: the IPv4-mapped hex match was too loose -- `::ffff:7f1:1`
+// is `7.241.0.1` (NOT 127.x), so the first hex group must be exactly `7f`+two digits.
+test('sanitizeUrlPreview recognizes only true IPv4-mapped loopback, not 7.x.x.x', () => {
+  for (const u of ['http://[::ffff:7f00:1]:9222/devtools/browser/RAW', 'http://[::ffff:127.5.6.7]:9222/devtools/x', 'http://[::ffff:7fff:1]:9222/json/version'])
+    assert.equal(sanitizeUrlPreview(u), undefined, `expected dropped (loopback): ${u}`);
+  // `::ffff:7f1:1` maps to 7.241.0.1 (public), not loopback -> kept (not dropped)
+  assert.notEqual(sanitizeUrlPreview('http://[::ffff:7f1:1]:9222/x'), undefined);
+});

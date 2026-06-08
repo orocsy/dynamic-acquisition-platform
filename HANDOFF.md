@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **194 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **196 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -342,6 +342,17 @@ escaped the `://`-only `RISKY_DIAGNOSTIC_PATTERN` -> added a `(?<![a-z0-9])(?:ht
 alternative; (3) an IPv4-mapped IPv6 loopback (`[::ffff:127.0.0.1]` -> canonicalized
 `::ffff:7f00:1`) wasn't recognized -> `isLoopbackHost` now matches `::ffff:127.x` and
 `::ffff:7fxx:` forms. Tests: 194 pass / 0 fail.
+
+**A NINTH codex re-review found three refinements of the round-8 fixes (findings trend
+9->5->5->3->3->3, converging):** (1) a bare `sig` key was missing from the key denylist ->
+added `(?<![a-z0-9])sig(?![a-z0-9])` (bounded, so `design`/`signal` aren't false positives);
+(2) the camelCase `*Ref`/`*Id` ref-key exemption still exempted credential-marker keys like
+`sessionId`/`jwtRef`/`authorizationId` -> `BROWSER_REF_KEY_PATTERN` is now an EXACT
+known-handle allow-list (`^(?:browserSessionRef|pageTargetRef|browserDaemonRef|
+browserObservationId|daemonId|targetRef)$`), so anything else falls through to the sensitive
+check; (3) the IPv4-mapped hex loopback match `7f[0-9a-f]{0,2}` wrongly accepted `::ffff:7f1:1`
+(= 7.241.0.1) -> tightened to `7f[0-9a-f]{2}` (exactly `0x7f00`-`0x7fff` = first byte 127).
+Tests: 196 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

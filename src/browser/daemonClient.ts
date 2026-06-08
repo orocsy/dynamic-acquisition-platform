@@ -87,8 +87,10 @@ export function isLoopbackHost(hostname: string): boolean {
   if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
   if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
   // IPv4-mapped IPv6 loopback: `::ffff:127.x.x.x` (dotted) or `::ffff:7fxx:yyyy` (hex, the
-  // form `new URL` canonicalizes `[::ffff:127.0.0.1]` to -> `::ffff:7f00:1`). 7f.. == 127..
-  if (/^::ffff:(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|7f[0-9a-f]{0,2}:[0-9a-f]{1,4})$/.test(host)) return true;
+  // form `new URL` canonicalizes `[::ffff:127.0.0.1]` to -> `::ffff:7f00:1`). The first hex
+  // group must be EXACTLY `7f` + two digits (`0x7f00`-`0x7fff`, i.e. first IPv4 byte 0x7f =
+  // 127); `7f1` would be `0x07f1` = 7.241.x.x, NOT loopback, so `{2}` (not `{0,2}`) is load-bearing.
+  if (/^::ffff:(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|7f[0-9a-f]{2}:[0-9a-f]{1,4})$/.test(host)) return true;
   return false;
 }
 

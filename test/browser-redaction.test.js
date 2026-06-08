@@ -587,3 +587,20 @@ test('redactBrowserDiagnosticData redacts a slashless special-scheme URL in pros
   // a bare `http:` mention (no URL body) is kept
   assert.equal(redactBrowserDiagnosticData({ note: 'the http: protocol section here' }).note, 'the http: protocol section here');
 });
+
+// Codex re-review (round 9) #1/#2: a bare `sig` key was missing from the key denylist, and
+// a credential-marker key that merely ends in Ref/Id (`jwtRef`/`sessionId`/`authorizationId`)
+// was wrongly exempted. `sig` is added (bounded) and the ref exemption is now an EXACT
+// known-handle-key list.
+test('redactBrowserDiagnosticData redacts sig + camelCase credential keys, keeps known handle keys', () => {
+  for (const k of ['sig', 'sessionId', 'jwtRef', 'authorizationId', 'jwt_ref', 'csrfId'])
+    assert.equal(redactBrowserDiagnosticData({ [k]: 'opaqueSecretValue' })[k], '[redacted]', `key ${k}`);
+  // bare lookalike words are not falsely redacted by the bounded `sig`
+  for (const k of ['design', 'signal', 'assignee'])
+    assert.equal(redactBrowserDiagnosticData({ [k]: 'blueprint' })[k], 'blueprint', `key ${k}`);
+  // the exact known operational-handle keys keep their opaque value
+  assert.equal(redactBrowserDiagnosticData({ browserSessionRef: 'daemon:d_1:session:r_1' }).browserSessionRef, 'daemon:d_1:session:r_1');
+  assert.equal(redactBrowserDiagnosticData({ daemonId: 'daemon_local_1' }).daemonId, 'daemon_local_1');
+  assert.equal(redactBrowserDiagnosticData({ pageTargetRef: 'page:t-1' }).pageTargetRef, 'page:t-1');
+  assert.equal(redactBrowserDiagnosticData({ targetRef: 'page:t-2' }).targetRef, 'page:t-2');
+});

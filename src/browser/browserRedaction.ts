@@ -91,17 +91,16 @@ function sanitizeStringForDiagnostics(value: string): string {
   // no clean // hierarchy) can embed an arbitrary secret-bearing payload that cannot be
   // delimited (a partial match would leave a `<script>...` tail) -> redact wholesale.
   if (OPAQUE_URL_SCHEME_PATTERN.test(out)) return REDACTED;
-  const wholeString = out === value && !/\s/.test(out);
-  // A whole-string scheme-relative `//host/...` is a raw endpoint -> redact it BEFORE the
-  // path-param strip below, which would otherwise mutate `out` and skip this check.
-  if (wholeString && out.startsWith('//')) return REDACTED;
-  // Strip RFC-3986 path parameters (;jsessionid=..., stray &...) from ANY relative-path
-  // token, whole-string OR embedded in prose -- a relative ref has no scheme for the
-  // absolute-URL sanitizer, and jsessionid is not a credential-assignment keyword.
-  out = out.replace(/(\/[^\s;&?#"'<>]*)[;&][^\s"'<>]*/g, '$1');
-  if (wholeString) {
-    out = out.split(/[?#;&]/, 1)[0] || out;
-  }
+  // Scheme-relative `//host/...` endpoints, whole-string OR embedded in prose, are raw
+  // endpoints with no scheme to sanitize -> drop the token. The `(^|\s)` anchor leaves a
+  // real `https://...` (already sanitized above; its `//` follows a `:`) and a path `//`
+  // untouched, and requiring a non-space host char after `//` skips a `// comment`.
+  out = out.replace(/(^|\s)\/\/[^\s"'<>]+/g, `$1${REDACTED}`);
+  // Strip query, fragment, AND path parameters from any relative-path token, whole-string
+  // OR embedded in prose (`/cb?code=...`, `/p#...`, `/p;jsessionid=...`, `/p&...` -> `/p`):
+  // a relative ref has no scheme for the absolute sanitizer, and its delimiter values (an
+  // OAuth `code`, a `jsessionid`) are not credential-assignment keywords.
+  out = out.replace(/(\/[^\s?#;&"'<>]*)[?#;&][^\s"'<>]*/g, '$1');
   // denylist check ONLY (see foldForDenylist): NFKD + strip invisible/format AND
   // combining-mark chars, so zero-width / full-width / accent splits all collapse to
   // the bare keyword. The returned value stays the original `out`.

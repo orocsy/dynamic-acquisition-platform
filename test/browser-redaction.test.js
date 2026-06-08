@@ -470,3 +470,35 @@ test('redactBrowserDiagnosticData redacts underscore-prefixed pat= assignments',
   // a benign `path=` is NOT redacted (pat is only a prefix of path; separator-bounded)
   assert.equal(redactBrowserDiagnosticData({ note: 'the path=/api/users is fine' }).note, 'the path=/api/users is fine');
 });
+
+// Codex re-review #1+#2: scheme-relative //host endpoints and relative-URL query/fragment
+// values were only handled for whole-string values; embedded in prose they leaked. Both
+// are now handled globally (the //host token dropped, the ?/#/;/& tail stripped).
+test('redactBrowserDiagnosticData redacts embedded scheme-relative endpoints and relative query/fragment', () => {
+  assert.equal(
+    redactBrowserDiagnosticData({ note: 'opened //127.0.0.1:9222/json/version before retry' }).note,
+    'opened [redacted] before retry',
+  );
+  assert.equal(
+    redactBrowserDiagnosticData({ note: 'redirected to /oauth2/callback?code=RAWCODE then back' }).note,
+    'redirected to /oauth2/callback then back',
+  );
+  for (const [note, secret] of [
+    ['see /sso?ticket=RAWTICKET now', 'RAWTICKET'],
+    ['frag /cb#id_token=RAWTOK end', 'RAWTOK'],
+    ['ep //10.0.0.1:9222/devtools/page/X done', '10.0.0.1'],
+  ])
+    assert.equal(redactBrowserDiagnosticData({ note }).note.includes(secret), false, `leaked ${secret}`);
+  // a `// comment` (space after //) and a clean relative path are NOT touched
+  assert.equal(redactBrowserDiagnosticData({ note: 'see // TODO and /api/v2/users ok' }).note, 'see // TODO and /api/v2/users ok');
+});
+
+// Codex re-review #3: the ref denylist omitted the short `sig` marker (the value side
+// flags `sig=`), so session:sig_... passed isOpaqueSurrogateSessionId and was echoed on a
+// miss. `sig` is now alnum-bounded (so `design`/`signal`/`assign` are not false positives).
+test('isOpaqueBrowserRef rejects a bounded sig marker but keeps sig-containing words', () => {
+  for (const bad of ['session:sig_RAWSECRET', 'x-sig-1', 'd_sig_y'])
+    assert.equal(isOpaqueBrowserRef(bad), false, `expected ${bad} rejected`);
+  for (const ok of ['page:design-1', 'run_signal_handler', 'session:assign-x', 'page:insignia-7'])
+    assert.equal(isOpaqueBrowserRef(ok), true, `expected ${ok} accepted`);
+});

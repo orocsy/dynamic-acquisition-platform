@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **178 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **180 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -266,7 +266,14 @@ wholesale via `OPAQUE_URL_SCHEME_PATTERN`; (b) my path-param strip mutated `out`
 the whole-string `//host` redaction, leaking the raw endpoint (a regression) -> the
 `//host` check runs BEFORE the strip; (c) `pat` in the value-side credential pattern used
 `\b`, missing `github_pat=` -> separator-bounded like the ref/key denylists.
-Tests: 178 pass / 0 fail.
+A FOURTH codex re-review found three more (two the embedded-in-prose counterparts of the
+above): (a) embedded `//host` endpoints in prose were not redacted (only whole-string) ->
+the `//host` drop now runs globally (`(^|\s)//host`, leaving `http://` and `// comment`);
+(b) an embedded relative URL's `?`/`#` query/fragment was not stripped (only `;`/`&`) ->
+the relative-token strip now covers `[?#;&]` globally; (c) the ref denylist omitted the
+short `sig` marker -> added (alnum-bounded, so `design`/`signal`/`assign` are not false
+positives). The whole-string `wholeString` special-casing was removed — relative URLs are
+now handled identically whether whole-string or embedded. Tests: 180 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

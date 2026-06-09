@@ -32,6 +32,9 @@ export type BrowserObservation = {
     headersPreview?: Record<string, string>;
     resourceType?: string;
     bodyShape?: BrowserObservationBodyShape;
+    // Query param NAMES only (the sanitized `url` strips the query string). Carried so the
+    // network->evidence bridge preserves names without values; validated as value-less.
+    queryParamNames?: string[];
   };
   response?: {
     status?: number;
@@ -237,6 +240,21 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
   }
 }
 
+const CLEAN_QUERY_PARAM_NAME = /^[^\s%=&?#/\\\p{Cc}]+$/u;
+
+function assertQueryParamNamesSafe(names: string[] | undefined): void {
+  if (names === undefined) return;
+  // Each must be a clean, value-LESS name token: non-empty, bounded, and free of the value
+  // separator `=`, the param/url delimiters `&`/`?`/`#`, a slash/backslash, a percent (an
+  // encoded delimiter), whitespace, and control chars -- so a name can never smuggle a value
+  // or a URL delimiter into a persisted observation.
+  for (const name of names) {
+    if (typeof name !== 'string' || name.length === 0 || name.length > 256 || !CLEAN_QUERY_PARAM_NAME.test(name)) {
+      throw new Error('browser observation request.queryParamNames must be clean value-less name tokens');
+    }
+  }
+}
+
 export function assertSafeBrowserObservation(observation: BrowserObservation): void {
   assertJsonSafe(observation, 'observation');
   // request.url and pageTargetRef are persisted alongside the header previews, so the
@@ -245,6 +263,7 @@ export function assertSafeBrowserObservation(observation: BrowserObservation): v
   if (observation.request?.url !== undefined && !isSanitizedUrlField(observation.request.url)) {
     throw new Error('browser observation request.url must be a sanitized http(s) URL or relative path');
   }
+  assertQueryParamNamesSafe(observation.request?.queryParamNames);
   if (observation.pageTargetRef !== undefined && !isPageTargetRef(observation.pageTargetRef)) {
     throw new Error('browser observation pageTargetRef must be an opaque page target ref (page:<id>)');
   }

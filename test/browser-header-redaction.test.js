@@ -395,3 +395,19 @@ test('invariant rejects every loopback host spelling and encoded-delimiter relat
   for (const url of ['https://api.example.com/json/version', 'https://api.example.com/v1/users', '/v1/users'])
     assert.doesNotThrow(() => acc(url), `expected ${url} accepted`);
 });
+
+// Phase 3.4 (MIU 1): request.queryParamNames carries the query param NAMES that the
+// sanitized request.url strips, so the network->evidence bridge can preserve NAMES (not
+// values, per design 7.6). The invariant validates each name is a clean value-less token
+// (no '='/value, no '&'/'?'/'#'/'/'/'\\'/'%'/whitespace/control) so a name can't smuggle a
+// value or a URL delimiter into a persisted observation.
+test('invariant validates request.queryParamNames as clean value-less name tokens', () => {
+  const base = { id: 'o', runId: 'r', source: 'cdp', capturedAt: 't' };
+  const withNames = (queryParamNames) => ({ ...base, request: { url: 'https://api.example.com/v1/users', method: 'GET', queryParamNames } });
+  // clean names (incl. array/dotted names and a sensitively-NAMED but value-less param) and [] are accepted
+  for (const ok of [['page', 'page_size', 'sort-by'], ['ids[]', 'filter.name'], ['access_token'], []])
+    assert.doesNotThrow(() => assertSafeBrowserObservation(withNames(ok)), JSON.stringify(ok));
+  // a name carrying a value or a URL/structural delimiter is rejected
+  for (const bad of [['a=b'], ['access_token=SECRET'], ['foo&bar'], ['x?y'], ['a#b'], ['a/b'], ['a\\b'], ['has space'], ['a%3Db'], ['']])
+    assert.throws(() => assertSafeBrowserObservation(withNames(bad)), /queryParamNames/, JSON.stringify(bad));
+});

@@ -82,10 +82,22 @@ export function daemonIdFromEndpoint(endpoint: string): string {
  * daemon, so a `local-chrome-daemon` ref must point at loopback. This also
  * prevents the health check from being pointed at an arbitrary remote host.
  */
-function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+export function isLoopbackHost(hostname: string): boolean {
+  // Lowercase, trim a trailing root dot, then strip IPv6 brackets. A fully-qualified
+  // `localhost.` / `127.0.0.1.` (and `localhost%2e`, which `new URL` canonicalizes to
+  // `localhost.`) resolves to loopback but would otherwise slip past the exact-string checks.
+  const host = hostname.toLowerCase().replace(/\.+$/, '').replace(/^\[|\]$/g, '');
+  // RFC 6761: `localhost` AND any `*.localhost` subdomain resolve to loopback. (`evil.com`
+  // with a `localhost` LABEL, e.g. `localhost.evil.com`, does NOT end in `.localhost`, so it
+  // is correctly not matched.)
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '127.0.0.1' || host === '::1') return true;
   if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  // IPv4-mapped IPv6 loopback: `::ffff:127.x.x.x` (dotted) or `::ffff:7fxx:yyyy` (hex, the
+  // form `new URL` canonicalizes `[::ffff:127.0.0.1]` to -> `::ffff:7f00:1`). The first hex
+  // group must be EXACTLY `7f` + two digits (`0x7f00`-`0x7fff`, i.e. first IPv4 byte 0x7f =
+  // 127); `7f1` would be `0x07f1` = 7.241.x.x, NOT loopback, so `{2}` (not `{0,2}`) is load-bearing.
+  if (/^::ffff:(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|7f[0-9a-f]{2}:[0-9a-f]{1,4})$/.test(host)) return true;
   return false;
 }
 

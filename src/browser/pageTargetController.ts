@@ -543,6 +543,25 @@ export class ChromePageTargetController extends BasePageTargetController {
         diagnostics: { reason: 'transport createTarget threw' },
       });
     }
+    // A concurrent lifecycle op (closeTarget / navigate / markStale) may have mutated
+    // or removed the reserved record during the await above. If it is no longer
+    // `created`, binding this freshly-opened raw target to it would orphan a live CDP
+    // target on a closed/stale ref and return a snapshot that lies about the state.
+    // Close the raw target and surface the store's CURRENT state instead.
+    const current = this.store.get(ref);
+    if (!current || current.state !== 'created') {
+      try {
+        await this.#transport.close({ rawTargetId });
+      } catch {
+        /* best-effort: the ref is already gone/closed, the target must not leak */
+      }
+      if (!current) {
+        throw new PageTargetError('unknown-target', 'page target was removed during creation', {
+          pageTargetRef: refForError(ref),
+        });
+      }
+      return current;
+    }
     this.#rawByRef.set(ref, rawTargetId);
     return snapshot;
   }

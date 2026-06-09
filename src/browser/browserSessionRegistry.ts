@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { BrowserSessionRef } from '../runtime';
+import { isOpaqueSurrogateSessionId } from './browserRef';
 import { toPersistableSessionRecord } from './persistenceGuard';
 import type { BrowserDaemonMode, PageTargetRef } from './types';
 
@@ -82,6 +83,18 @@ function defaultClock(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Never echo a caller-supplied sessionId that is not a valid opaque surrogate. A
+ * lookup miss on an unsafe id (e.g. a raw `ws://…/devtools/…?token=…`) must not
+ * surface that id in an error — and an unsafe id can never be a registered
+ * session anyway, so there is nothing to identify by showing it. Mirrors the page
+ * target controller's `refForError`.
+ */
+function sessionIdForError(sessionId: BrowserSessionRef | string): string {
+  const key = String(sessionId);
+  return isOpaqueSurrogateSessionId(key) ? key : '[redacted-session-id]';
+}
+
 // Field-level safety is centralized in `persistenceGuard.ts`. The registry
 // never stores a raw value; every record is built via `toPersistableSessionRecord`,
 // which classifies and disposes each field (reject vs sanitize). `sanitizeUrlPreview`
@@ -138,7 +151,7 @@ export class InMemoryBrowserSessionRegistry implements BrowserSessionRegistry {
     const key = String(input.sessionId);
     const existing = this.#records.get(key);
     if (!existing) {
-      throw new Error(`browser session ${key} not found`);
+      throw new Error(`browser session ${sessionIdForError(input.sessionId)} not found`);
     }
     // Re-run the full merged record through the guard so incoming fields
     // (pageTargetRef, targetUrlPreview) are classified on every write, not just

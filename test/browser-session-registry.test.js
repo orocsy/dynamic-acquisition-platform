@@ -218,3 +218,92 @@ test('registry strips query secrets from targetUrlPreview on register and update
   assert.equal(updated.targetUrlPreview, 'https://example.com/next');
   assert.equal(JSON.stringify(registry.get('session:opaque-007')).includes('ANOTHERSECRET'), false);
 });
+
+// update() on a lookup miss must not echo a caller-supplied UNSAFE sessionId (a
+// raw ws:// debugger URL + token) back in the error — same no-echo rule as the
+// page target controller's incoming refs.
+test('update() does not echo an unsafe sessionId on a lookup miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  const unsafe = 'ws://127.0.0.1:9222/devtools/browser/RAW?token=SECRET';
+  assert.throws(
+    () => registry.update({ sessionId: unsafe, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('SECRET'), false);
+      assert.equal(err.message.includes('ws://'), false);
+      assert.equal(err.message.includes('devtools'), false);
+      assert.match(err.message, /not found/);
+      return true;
+    },
+  );
+});
+
+// ...but a safe-but-unknown surrogate is still named, so real misses stay debuggable.
+test('update() still names a safe-but-unknown surrogate on a miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  assert.throws(
+    () => registry.update({ sessionId: 'session:does-not-exist', pageTargetRef: 'page:x' }),
+    /session:does-not-exist not found/,
+  );
+});
+
+// Codex review: a keyword-bearing id (e.g. session:access_token_...) passed
+// isOpaqueSurrogateSessionId and got echoed. Now treated as unsafe -> redacted.
+test('update() redacts a keyword-bearing sessionId on a miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  const id = 'session:' + 'access' + '_token_ABCD'; // assembled so source has no literal token
+  assert.throws(
+    () => registry.update({ sessionId: id, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('access_token'), false);
+      assert.match(err.message, /redacted-session-id/);
+      return true;
+    },
+  );
+});
+
+// Codex review (follow-up): isOpaqueSurrogateSessionId still omitted `pat`, so a
+// `session:pat_...` (personal access token) miss was echoed. Now redacted too.
+test('update() redacts a pat-bearing sessionId on a miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  const id = 'session:' + 'pat' + '_ABCD'; // assembled so source carries no literal PAT token
+  assert.throws(
+    () => registry.update({ sessionId: id, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('pat_ABCD'), false);
+      assert.match(err.message, /redacted-session-id/);
+      return true;
+    },
+  );
+});
+
+// Adversarial review (LEAK 1): a `keyword_<value>` surrogate defeated the `\b`
+// trailing boundary (`_` is a word char) and was echoed verbatim on a miss. The
+// alnum-boundary fix now classifies it unsafe -> redacted.
+test('update() redacts a keyword_<value> sessionId (boundary-defeating) on a miss', () => {
+  const registry = new InMemoryBrowserSessionRegistry();
+  const id = 'otp' + '_LEAKEDSECRET'; // otp_ : keyword with no trailing word boundary
+  assert.throws(
+    () => registry.update({ sessionId: id, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('LEAKEDSECRET'), false);
+      assert.match(err.message, /redacted-session-id/);
+      return true;
+    },
+  );
+});
+
+// Second adversarial review (LEAK A): a combining-mark-split keyword surrogate
+// (`sećret_...`) defeated the denylist and was echoed on a miss. Now redacted.
+test('update() redacts a combining-mark-split sessionId on a miss', () => {
+  const C = (n) => String.fromCodePoint(n);
+  const registry = new InMemoryBrowserSessionRegistry();
+  const id = 'se' + 'c' + C(0x301) + 'ret' + '_LEAKEDVAL'; // sećret_... (decomposed)
+  assert.throws(
+    () => registry.update({ sessionId: id, pageTargetRef: 'page:x' }),
+    (err) => {
+      assert.equal(err.message.includes('LEAKEDVAL'), false);
+      assert.match(err.message, /redacted-session-id/);
+      return true;
+    },
+  );
+});

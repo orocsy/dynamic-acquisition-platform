@@ -118,3 +118,280 @@ test('a sanitized Location preview passes the invariant check', () => {
   };
   assert.doesNotThrow(() => assertSafeBrowserObservation(observation));
 });
+
+// Review finding: a URL-bearing header with a non-http(s) scheme (a raw
+// ws/devtools/chrome endpoint) was kept with only its query stripped, leaking the
+// debugger URL. Now dropped at construction and rejected by the invariant — the
+// same http(s)-only policy as sanitizeUrlPreview.
+test('toSafeHeaderPreview drops a ws://devtools Location instead of keeping the endpoint', () => {
+  const preview = toSafeHeaderPreview({
+    Location: 'ws://127.0.0.1:9222/devtools/page/RAW?q=DROPME',
+  });
+  assert.equal(preview.location, '[redacted]');
+  const blob = JSON.stringify(preview);
+  assert.equal(blob.includes('ws://'), false);
+  assert.equal(blob.includes('devtools'), false);
+  assert.equal(blob.includes('DROPME'), false); // whole value dropped, query included
+});
+
+test('invariant rejects a Location with a non-http(s) scheme even after the query is stripped', () => {
+  for (const loc of [
+    'ws://127.0.0.1:9222/devtools/page/RAW',
+    'wss://127.0.0.1:9222/devtools/browser/RAW',
+    'chrome://version',
+    'devtools://devtools/page/RAW',
+  ]) {
+    assert.throws(
+      () =>
+        assertSafeBrowserObservation({
+          id: 'observation_nonhttp_location',
+          runId: 'run_browser_001',
+          source: 'cdp',
+          capturedAt: '2026-05-24T00:00:00.000Z',
+          response: { status: 302, headersPreview: { location: loc } },
+        }),
+      /must be redacted/,
+      `expected ${loc} rejected`,
+    );
+  }
+});
+
+test('a relative or http(s) Location still passes the invariant', () => {
+  for (const loc of ['/relative/path', 'https://example.com/ok']) {
+    assert.doesNotThrow(() =>
+      assertSafeBrowserObservation({
+        id: 'observation_ok_location',
+        runId: 'run_browser_001',
+        source: 'cdp',
+        capturedAt: '2026-05-24T00:00:00.000Z',
+        response: { status: 302, headersPreview: { location: loc } },
+      }),
+    );
+  }
+});
+
+// Codex review: the invariant's scheme check only matched `scheme://`, so opaque
+// schemes (javascript:/data:/mailto:) and scheme-relative userinfo slipped past a
+// prebuilt observation. Construction drops them; the invariant must too.
+test('invariant rejects opaque/non-http, scheme-relative, and smuggled Locations', () => {
+  const C = (n) => String.fromCharCode(n);
+  const dt = '127.0.0.1:9222/devtools/browser/RAW';
+  for (const loc of [
+    'javascript:alert(1)',
+    'data:text/html,raw',
+    'mailto:a@b.com',
+    '//x:y@host/path',
+    '//' + dt, // scheme-relative devtools endpoint
+    '/' + C(9) + '/' + dt, // tab-smuggled
+    C(0) + '//' + dt, // NUL-smuggled
+  ]) {
+    assert.throws(
+      () =>
+        assertSafeBrowserObservation({
+          id: 'observation_opaque_scheme',
+          runId: 'run_browser_001',
+          source: 'cdp',
+          capturedAt: '2026-05-24T00:00:00.000Z',
+          response: { status: 302, headersPreview: { location: loc } },
+        }),
+      /must be redacted/,
+      `expected ${JSON.stringify(loc)} rejected`,
+    );
+  }
+});
+
+test('construction drops opaque-scheme, scheme-relative, and smuggled Locations', () => {
+  const C = (n) => String.fromCharCode(n);
+  const dt = '127.0.0.1:9222/devtools/browser/RAW';
+  for (const loc of [
+    'javascript:alert(1)',
+    'data:text/html,raw',
+    'mailto:a@b.com',
+    '//x:y@host/path?q=1',
+    '//' + dt,
+    '/' + C(9) + '/' + dt, // tab-smuggled
+    C(0x200b) + '//' + dt, // zero-width-smuggled
+  ]) {
+    assert.equal(toSafeHeaderPreview({ Location: loc }).location, '[redacted]', `expected redacted: ${JSON.stringify(loc)}`);
+  }
+});
+
+// Adversarial review (LEAK 3): the relative-path allow-list permitted backslash, so
+// `/\host` smuggled a host past construction AND the invariant (new URL treats
+// `\`==`/`). Backslash is excluded from BOTH the relative and absolute allow-lists.
+test('backslash-smuggled host Location is dropped at construction and rejected by the invariant', () => {
+  const bs = String.fromCharCode(92);
+  const loc = '/' + bs + 'evil.internal:9222/devtools/browser/RAW';
+  assert.equal(toSafeHeaderPreview({ Location: loc }).location, '[redacted]');
+  assert.equal(JSON.stringify(toSafeHeaderPreview({ Location: loc })).includes('evil.internal'), false);
+  for (const bad of [loc, 'https://' + bs + 'evil.com/x', 'https://host' + bs + 'evil.com/x'])
+    assert.throws(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', response: { status: 302, headersPreview: { location: bad } } }),
+      /must be redacted/,
+      `expected ${JSON.stringify(bad)} rejected`,
+    );
+});
+
+// Adversarial review (LEAK 4 / deferred S2): assertSafeBrowserObservation validated
+// only header previews, so a prebuilt observation's request.url or pageTargetRef
+// carried raw query/userinfo/endpoints untouched. The invariant now validates both.
+test('invariant rejects an unsanitized request.url', () => {
+  const bs = String.fromCharCode(92);
+  for (const url of [
+    'http://host/cb?code=SECRETCODE', // query secret
+    'https://user:PASS@host/x', // userinfo
+    'ws://127.0.0.1:9222/devtools/page/RAW', // raw endpoint scheme
+    '//evil.internal:9222/x', // scheme-relative host
+    'javascript:alert(1)', // opaque scheme
+    '/' + bs + 'evil.internal/x', // backslash host smuggle
+  ])
+    assert.throws(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } }),
+      /request\.url must be/,
+      `expected request.url ${JSON.stringify(url)} rejected`,
+    );
+});
+
+test('invariant rejects a non-page-shaped pageTargetRef', () => {
+  for (const ref of ['ws://h:9222/devtools/RAW', '/Users/v/secret', 'session:uuid-1', 'not-a-page-ref', 'daemon:d:session:r'])
+    assert.throws(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', pageTargetRef: ref }),
+      /pageTargetRef must be/,
+      `expected pageTargetRef ${JSON.stringify(ref)} rejected`,
+    );
+});
+
+test('invariant accepts a sanitized request.url and a page:<id> pageTargetRef', () => {
+  assert.doesNotThrow(() =>
+    assertSafeBrowserObservation({
+      id: 'o', runId: 'r', source: 'cdp', capturedAt: 't',
+      pageTargetRef: 'page:target-1',
+      request: { url: 'https://api.example.com/v1/users', method: 'GET' },
+    }),
+  );
+  // a clean relative request.url is also accepted
+  assert.doesNotThrow(() =>
+    assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: '/v1/users', method: 'GET' } }),
+  );
+});
+
+// Fourth adversarial review: the relative-path allow-list admitted `?`/`#` (they sit
+// inside the \x21-\x5b range), so a query/fragment-bearing relative URL — a keyword-
+// free OAuth `code` / CAS `ticket` — passed the prebuilt-observation invariant while
+// construction stripped it. The allow-list now rejects `?`/`#`, symmetric with the
+// absolute one (a sanitized relative path carries neither).
+test('invariant rejects a query/fragment-bearing relative request.url or header', () => {
+  for (const url of ['/oauth2/callback?code=RAWCODE', '/cb#id_token=RAWTOK', '/p?a=b'])
+    assert.throws(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } }),
+      /request\.url must be/,
+      `expected request.url ${JSON.stringify(url)} rejected`,
+    );
+  // a keyword-free secret in a relative redirect header must be rejected too
+  for (const loc of ['/redirect?code=RAWCODE', '/sso?ticket=RAWTICKET', '/cb#frag=RAWVAL'])
+    assert.throws(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', response: { status: 302, headersPreview: { location: loc } } }),
+      /must be redacted/,
+      `expected Location ${JSON.stringify(loc)} rejected`,
+    );
+  // a clean relative path (no query/fragment) is still accepted
+  assert.doesNotThrow(() =>
+    assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: '/oauth2/callback', method: 'GET' } }),
+  );
+});
+
+// Fifth adversarial review: path parameters (;jsessionid=) bypassed URL sanitization
+// (they live in pathname, not query). Construction now strips them; the invariant
+// rejects a value still carrying one.
+test('path params (;jsessionid=) are stripped on construction and rejected by the invariant', () => {
+  const raw = 'jsessionid=9F8E7D6C5B4A39281706';
+  assert.equal(toSafeHeaderPreview({ Location: '/dashboard;' + raw }).location, '/dashboard');
+  assert.equal(toSafeHeaderPreview({ Location: 'https://app.example.com/dashboard;' + raw }).location, 'https://app.example.com/dashboard');
+  assert.equal(JSON.stringify(toSafeHeaderPreview({ Location: '/dashboard;' + raw })).includes('9F8E7D6C5B4A39281706'), false);
+  for (const v of ['/dashboard;' + raw, 'http://h/p;' + raw, '/p&code=RAWCODE'])
+    assert.throws(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: v, method: 'GET' } }),
+      /request\.url must be/,
+      `expected ${JSON.stringify(v)} rejected`,
+    );
+});
+
+// Fifth adversarial review: assertHeaderPreviewSafe ran the sensitive-substring check
+// before the URL-bearing check, so a legitimately sanitized Location whose PATH merely
+// contains `session`/`secret`/`token` (e.g. /api/v2/sessions) was falsely rejected by
+// its own gate. URL-bearing headers are now validated by isSanitizedUrlField first.
+test('a sanitized URL-bearing header with a session/secret path segment passes the invariant', () => {
+  for (const loc of ['/api/v2/sessions', '/files/secret-report.pdf', 'https://h.example.com/oauth/token']) {
+    const preview = toSafeHeaderPreview({ Location: loc });
+    assert.equal(preview.location, loc, `construction changed ${loc}`);
+    assert.doesNotThrow(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', response: { status: 302, headersPreview: preview } }),
+      `invariant falsely rejected sanitized ${loc}`,
+    );
+  }
+});
+
+// Codex re-review: CLEAN_ABSOLUTE_URL forbade `@` ANYWHERE, but `@` is legal in a path
+// segment (an npm scoped-package CDN, `/@scope/pkg`). Construction emits it; the invariant
+// now accepts it (only authority userinfo `@` — before the first `/` — is rejected).
+test('invariant accepts @ in a URL path but still rejects userinfo @', () => {
+  for (const url of ['https://cdn.example/@scope/pkg', 'https://h.example.com/users/@handle'])
+    assert.doesNotThrow(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } }),
+      `expected ${url} accepted`,
+    );
+  // construction preserves the @ path segment
+  assert.equal(toSafeHeaderPreview({ Location: 'https://cdn.example/@scope/pkg' }).location, 'https://cdn.example/@scope/pkg');
+  // userinfo @ (in the authority) is still rejected
+  assert.throws(
+    () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://user:pass@host/x', method: 'GET' } }),
+    /request\.url must be/,
+  );
+});
+
+// Codex re-review #5/#6: an HTTP CDP debugger endpoint passed the http(s) header gate
+// and the invariant, and a percent-encoded matrix delimiter (`%3B`=`;`) survived. Both
+// are now dropped/rejected; a legit public /json/* API URL is still accepted.
+test('header sanitizer + invariant drop http(s) CDP endpoints and percent-encoded params', () => {
+  assert.equal(toSafeHeaderPreview({ Location: 'http://127.0.0.1:9222/devtools/page/RAWID' }).location, '[redacted]');
+  assert.equal(toSafeHeaderPreview({ Location: 'https://app.example.com/d%3Bjsessionid=RAWSID' }).location.includes('RAWSID'), false);
+  for (const url of ['http://127.0.0.1:9222/devtools/browser/RAWID', 'http://127.0.0.1:9222/json/version', 'https://app.example.com/d%3Bjsessionid=RAWSID'])
+    assert.throws(
+      () => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } }),
+      /request\.url must be/,
+      `expected ${url} rejected`,
+    );
+  // a legit public /json/users API observation is accepted (not a CDP endpoint)
+  assert.doesNotThrow(() =>
+    assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://api.example.com/json/users', method: 'GET' } }),
+  );
+});
+
+// Codex re-review (round 6) #1/#4/#5: the invariant scopes the CDP rejection to a LOOPBACK
+// host (a public /json/version is accepted), decodes the path (%64evtools rejected), and
+// rejects encoded query/fragment delimiters (%3F/%23).
+test('invariant scopes CDP rejection to loopback, decodes, and rejects encoded delimiters', () => {
+  const acc = (url) => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } });
+  // public CDP-looking URLs are accepted
+  for (const url of ['https://api.example.com/json/version', 'https://cdn.example.com/devtools/guide'])
+    assert.doesNotThrow(() => acc(url), `expected ${url} accepted`);
+  // loopback CDP (incl. percent-encoded) and encoded query delimiters are rejected
+  for (const url of [
+    'http://127.0.0.1:9222/json/version',
+    'http://127.0.0.1:9222/%64evtools/browser/RAW',
+    'https://app.example.com/callback%3Fcode=RAWCODE',
+    'https://app.example.com/cb%23access_token=RAWT',
+  ])
+    assert.throws(() => acc(url), /request\.url must be/, `expected ${url} rejected`);
+});
+
+// Codex re-review (round 7): the invariant parses the value (not a raw regex), so octal/
+// decimal/IPv6 loopback host spellings (canonicalized by new URL) are rejected; a relative
+// URL with an encoded delimiter is rejected; a clean public URL is accepted.
+test('invariant rejects every loopback host spelling and encoded-delimiter relative URL', () => {
+  const acc = (url) => assertSafeBrowserObservation({ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url, method: 'GET' } });
+  for (const url of ['http://0177.0.0.1:9222/devtools/browser/RAW', 'http://2130706433:9222/json/version', 'http://[::1]:9222/x', '/oauth2/callback%3Fcode=RAWCODE'])
+    assert.throws(() => acc(url), /request\.url must be/, `expected ${url} rejected`);
+  for (const url of ['https://api.example.com/json/version', 'https://api.example.com/v1/users', '/v1/users'])
+    assert.doesNotThrow(() => acc(url), `expected ${url} accepted`);
+});

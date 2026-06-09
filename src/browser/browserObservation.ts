@@ -1,4 +1,6 @@
 import type { BrowserObservationId, PageTargetRef } from './types';
+import { isPageTargetRef } from './browserRef';
+import { isLoopbackHost } from './daemonClient';
 
 export type BrowserObservationSource = 'cdp' | 'playwright' | 'daemon-fixture';
 
@@ -46,6 +48,31 @@ export type BrowserObservation = {
 const REDACTED = '[redacted]';
 const SENSITIVE_HEADER_PATTERN = /(?:authorization|cookie|set-cookie|api[-_]?key|x-api-key|token|secret|session|mfa|otp|captcha)/i;
 
+// A persistence-safe URL field: a clean http(s) absolute URL (no userinfo, query,
+// fragment, whitespace, control char, or backslash) OR a clean relative path (single
+// leading slash, printable ASCII, no backslash — `/\\host` would smuggle a host that
+// `new URL` resolves via `\\`==`/`). Shared by the header check and the request.url
+// invariant so both enforce one policy.
+const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@/?#;&\s\x5c\x00-\x1f]+(?:\/[^?#;&\s\x5c\x00-\x1f]*)?$/i;
+const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
+function isSanitizedUrlField(value: string): boolean {
+  // Reject any percent-encoded query/fragment/param delimiter (`%3B`/`%26`/`%3F`/`%23`) a
+  // consumer would decode into a secret.
+  if (/%(?:3[bf]|26|23)/i.test(value)) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return CLEAN_RELATIVE_PATH.test(value);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  // A loopback host is the local daemon / a CDP debugger endpoint / an SSRF target, never a
+  // public page; `new URL` canonicalizes octal/decimal/IPv6 spellings (`0177.0.0.1`,
+  // `2130706433`, `[::1]`) so parsing here catches every form a raw regex would miss.
+  if (isLoopbackHost(parsed.hostname)) return false;
+  return CLEAN_ABSOLUTE_URL.test(value);
+}
+
 /**
  * Header names whose *values* are safe to retain verbatim. These carry only
  * low-cardinality protocol metadata — no URLs, filenames, or free-form text
@@ -86,16 +113,37 @@ const PRESENCE_ONLY_HEADER_ALLOWLIST = new Set<string>(['etag', 'content-disposi
 function sanitizeHeaderUrlValue(value: string): string {
   try {
     const parsed = new URL(value);
+    // Only http/https URL-bearing header values are kept. A non-web scheme
+    // (ws/wss/chrome/devtools/file/…) is a raw endpoint/path, not a page URL —
+    // drop it rather than keep the scheme with only the query stripped. Same
+    // http(s)-only policy as persistenceGuard's sanitizeUrlPreview.
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return REDACTED;
+    }
+    // A loopback host is the local daemon / a CDP debugger endpoint / an SSRF target, never a
+    // page -> drop it (new URL canonicalizes octal/decimal/IPv6 host spellings).
+    if (isLoopbackHost(parsed.hostname)) {
+      return REDACTED;
+    }
     parsed.search = '';
     parsed.hash = '';
     if (parsed.username || parsed.password) {
       parsed.username = '';
       parsed.password = '';
     }
+    // Drop RFC-3986 path parameters too (`;jsessionid=…`, stray `&…`) — they sit in
+    // pathname, not search, so a session id in a redirect Location would survive.
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23/i)[0];
     return parsed.toString();
   } catch {
-    // relative URL or non-URL: drop everything from the first query/fragment delimiter
-    return value.split(/[?#]/, 1)[0] || REDACTED;
+    // Keep ONLY a clean relative path; drop scheme-relative or whitespace/tab/control/
+    // zero-width-smuggled host-bearing forms (a URL parser normalizes `/<tab>/host` to
+    // `//host`). A relative path has no host:port to leak. See sanitizeUrlPreview.
+    // a relative path with a percent-encoded query/fragment/param delimiter would survive
+    // (CLEAN_RELATIVE_PATH permits `%`) and a consumer would decode it -> redact it.
+    if (/%(?:3[bf]|26|23)/i.test(value)) return REDACTED;
+    const path = value.split(/[?#;&]/, 1)[0];
+    return CLEAN_RELATIVE_PATH.test(path) ? path : REDACTED;
   }
 }
 
@@ -161,18 +209,27 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
     if (SENSITIVE_HEADER_PATTERN.test(lowerName)) {
       throw new Error(`browser observation header ${path}.${name} must be redacted`);
     }
+    if (URL_BEARING_HEADER_ALLOWLIST.has(lowerName)) {
+      // A URL-bearing header value must already be sanitized to EITHER a clean http(s)
+      // absolute URL OR a clean relative path: no query/fragment/path-param/userinfo,
+      // http(s) scheme only. Everything else is rejected — scheme-relative `//host`, an
+      // opaque/non-http scheme (`javascript:`/`data:`/`ws:`), a tab/control/zero-width-
+      // smuggled host, userinfo, or a `;jsessionid=` path param — any of which can carry
+      // a raw endpoint or a secret. Checked BEFORE the generic sensitive-substring test
+      // below so a legitimately sanitized path that merely CONTAINS `session`/`secret`
+      // as a segment (e.g. `/api/v2/sessions`) is not falsely rejected; isSanitizedUrlField
+      // already guarantees no secret-carrying structure survives. (Allow-list the safe
+      // shapes; deny-listing missed smuggled variants.)
+      if (!isSanitizedUrlField(value)) {
+        throw new Error(`browser observation header ${path}.${name} must be redacted`);
+      }
+      continue;
+    }
     if (SENSITIVE_HEADER_PATTERN.test(value)) {
       throw new Error(`browser observation header ${path}.${name} contains unsafe value`);
     }
     if (PRESENCE_ONLY_HEADER_ALLOWLIST.has(lowerName)) {
       throw new Error(`browser observation header ${path}.${name} must be redacted`);
-    }
-    if (URL_BEARING_HEADER_ALLOWLIST.has(lowerName)) {
-      // a URL-bearing header value must already be sanitized (no query/fragment/userinfo)
-      if (/[?#]/.test(value) || /^[a-z]+:\/\/[^/]*@/i.test(value)) {
-        throw new Error(`browser observation header ${path}.${name} must be redacted`);
-      }
-      continue;
     }
     if (!SAFE_RAW_HEADER_VALUE_ALLOWLIST.has(lowerName)) {
       throw new Error(`browser observation header ${path}.${name} must be redacted`);
@@ -182,6 +239,15 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
 
 export function assertSafeBrowserObservation(observation: BrowserObservation): void {
   assertJsonSafe(observation, 'observation');
+  // request.url and pageTargetRef are persisted alongside the header previews, so the
+  // invariant must validate them too: a prebuilt observation must not carry a raw
+  // query/userinfo/endpoint in request.url, nor a non-page-shaped pageTargetRef.
+  if (observation.request?.url !== undefined && !isSanitizedUrlField(observation.request.url)) {
+    throw new Error('browser observation request.url must be a sanitized http(s) URL or relative path');
+  }
+  if (observation.pageTargetRef !== undefined && !isPageTargetRef(observation.pageTargetRef)) {
+    throw new Error('browser observation pageTargetRef must be an opaque page target ref (page:<id>)');
+  }
   assertHeaderPreviewSafe(observation.request?.headersPreview, 'request.headersPreview');
   assertHeaderPreviewSafe(observation.response?.headersPreview, 'response.headersPreview');
 }

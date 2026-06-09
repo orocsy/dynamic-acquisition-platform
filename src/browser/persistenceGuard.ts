@@ -1,4 +1,5 @@
 import { isOpaqueBrowserRef, isOpaqueSurrogateSessionId, isPageTargetRef, isSafeBrowserRefPart } from './browserRef';
+import { isLoopbackHost } from './daemonClient';
 import type { BrowserDaemonMode } from './types';
 
 /**
@@ -86,31 +87,81 @@ export function guardRefPart(field: string, value: string): string {
 
 /**
  * REJECT-on-mismatch: the transparent ref is permitted to *be* the transparent
- * form (that is its whole purpose), but must still be free of secrets/paths.
+ * form `daemon:<daemonId>:session:<runId>`, but each part must be a colon-free
+ * safe ref part.
+ *
+ * Anything in the `daemon:` namespace is ALWAYS validated as the transparent form
+ * — it must NOT short-circuit on `isOpaqueBrowserRef`, which permits colons. That
+ * short-circuit (added in an earlier round to let the ws:// case fall through to
+ * segment checks) let colon-smuggled/extra-segment refs bypass validation
+ * entirely: `daemon:a:b:session:run` (daemonId `a:b`), `daemon:…:session:run:extra`
+ * (tail), `daemon:ws://…/devtools/…:session:run`. `[^:]+` forbids extra `:`
+ * segments structurally; `isSafeBrowserRefPart` adds the opaque / no-`/` /
+ * no-keyword / no-whitespace checks. Only a NON-`daemon:` value may use the plain
+ * opaque-ref fallback.
  */
 export function guardTransparentRef(field: string, value: string): string {
-  if (!isOpaqueBrowserRef(value) && !/^daemon:[^\s]+:session:[^\s]+$/i.test(value)) {
-    throw new BrowserPersistenceError(field, 'must be a clean transparent session ref or opaque ref');
+  if (/^daemon:/i.test(value)) {
+    const match = /^daemon:([^:]+):session:([^:]+)$/i.exec(value);
+    if (match && isSafeBrowserRefPart(match[1]) && isSafeBrowserRefPart(match[2])) {
+      return value;
+    }
+    throw new BrowserPersistenceError(
+      field,
+      'must be a clean transparent session ref: daemon:<part>:session:<part> with colon-free opaque parts',
+    );
   }
-  return value;
+  if (isOpaqueBrowserRef(value)) return value;
+  throw new BrowserPersistenceError(field, 'must be a clean transparent session ref or opaque ref');
 }
 
 /**
  * SANITIZE: a URL *preview*. Query, fragment, and userinfo are stripped so a
- * secret in the URL is never persisted. Relative/non-URL strings are truncated
- * at the first query/fragment delimiter.
+ * secret in the URL is never persisted. Only http/https previews are kept: a
+ * non-web scheme (`ws`/`wss`/`chrome`/`devtools`/`file`/`data`/…) is not a page URL
+ * but a raw endpoint/path (a CDP debugger socket, a profile/file path) that must
+ * not land in a checkpoint, so it is dropped (returns `undefined`) rather than
+ * persisted with only its query stripped. Query, fragment, AND path parameters
+ * (`;jsessionid=…`) are removed; relative/non-URL strings are truncated at the first
+ * query/fragment/path-parameter delimiter.
  */
 export function sanitizeUrlPreview(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   try {
     const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return undefined;
+    }
+    // A loopback host is the local daemon / a CDP debugger endpoint (`/devtools/...`,
+    // `/json/...`) / an SSRF target, never a public page -> drop it. `new URL` canonicalizes
+    // octal/decimal/IPv6 spellings (`0177.0.0.1`, `2130706433`, `[::1]`), so `isLoopbackHost`
+    // catches every encoding with no path regex or percent-decode to get wrong.
+    if (isLoopbackHost(parsed.hostname)) {
+      return undefined;
+    }
     parsed.search = '';
     parsed.hash = '';
     parsed.username = '';
     parsed.password = '';
+    // Strip RFC-3986 path parameters AND any percent-encoded query/fragment/param delimiter
+    // (`%3B`=`;`, `%26`=`&`, `%3F`=`?`, `%23`=`#`) a server decodes before reading: they live
+    // in `pathname`, not `search`, so a `;jsessionid=`/`%3Fcode=` redirect URL would
+    // otherwise persist a live session id or auth code in a checkpoint preview.
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23/i)[0];
     return parsed.toString();
   } catch {
-    return value.split(/[?#]/, 1)[0] || undefined;
+    // Not an absolute URL. Keep ONLY a clean relative path (single leading slash,
+    // printable ASCII, query stripped). Drop everything else: a scheme-relative
+    // `//host`, OR a whitespace/tab/control/zero-width-smuggled form that a URL
+    // parser normalizes to `//host` (e.g. `/<tab>/127.0.0.1:9222/devtools/...`,
+    // `<NUL>//host`, `<ZWSP>//host`) — all can carry a raw host:port endpoint and
+    // are not explicit http(s) URLs. A `startsWith('//')` test misses every smuggled
+    // variant, so allow-list the safe shape instead of deny-listing.
+    // A relative path with a percent-encoded query/fragment/param delimiter (`%3B`/`%26`/
+    // `%3F`/`%23`) would persist a secret a consumer decodes -> drop it.
+    if (/%(?:3[bf]|26|23)/i.test(value)) return undefined;
+    const path = value.split(/[?#;&]/, 1)[0];
+    return /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/.test(path) ? path : undefined;
   }
 }
 

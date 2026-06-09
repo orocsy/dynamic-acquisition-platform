@@ -30,7 +30,7 @@ test('creates browser daemon, session, and observation fixtures without launchin
     runId: 'run_browser_001',
     source: 'daemon-fixture',
     capturedAt: '2026-05-24T00:00:00.000Z',
-    pageTargetRef: 'page_target_001',
+    pageTargetRef: 'page:target-001',
     request: {
       url: 'https://example.com/account',
       method: 'GET',

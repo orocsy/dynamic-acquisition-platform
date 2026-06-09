@@ -2,33 +2,23 @@ import { isOpaqueBrowserRef } from './browserRef';
 
 const REDACTED = '[redacted]';
 const SENSITIVE_KEY_PATTERN =
-  /(?:password|passwd|pwd|secret|authorization|cookie|set-cookie|api[-_]?key|token|mfa|otp|captcha|credential|session|profile|user-data-dir)/i;
-const BROWSER_REF_KEY_PATTERN = /(?:browserSessionRef|pageTargetRef|browserDaemonRef|browserObservationId|daemonId|targetRef|ref)$/i;
+  /(?:password|passwd|pwd|secret|authorization|cookie|set-cookie|api[-_]?key|token|mfa|otp|captcha|credential|session|profile|user-data-dir|jwt|csrf|xsrf|signature|private[-_]?key|auth[-_]?code|bearer|client[-_]?secret|(?<![a-z0-9])pat(?![a-z0-9])|(?<![a-z0-9])sig(?![a-z0-9]))/i;
+// The EXACT set of keys naming an operational browser ref/id whose value is an opaque
+// handle to keep (validated by isOpaqueBrowserRef), NOT a credential. An exact allow-list,
+// not a `*Ref`/`*Id` suffix, so a credential-marker key that merely ends in Ref/Id
+// (`jwtRef`, `sessionId`, `authorizationId`, `jwt_ref`) is NOT exempted -- it falls through
+// to SENSITIVE_KEY_PATTERN and is redacted.
+const BROWSER_REF_KEY_PATTERN = /^(?:browserSessionRef|pageTargetRef|browserDaemonRef|browserObservationId|daemonId|targetRef)$/;
 const PROFILE_LIKE_VALUE_PATTERN =
-  /(?:^~\/|^[a-z]:[\\/]|^\/(?:Users|Applications|Volumes|private|tmp|var|Library)\b|[\\/](?:Library|Application Support|Google|Chrome|Chromium)[\\/]|user-data-dir|\bprofile\b|chrome:\/\/|devtools|ws:\/\/|wss:\/\/)/i;
-
-function sanitizeBrowserUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    parsed.search = '';
-    parsed.hash = '';
-    // Strip userinfo too: `https://user:pass@host/...` must not retain `user:pass`.
-    parsed.username = '';
-    parsed.password = '';
-    return parsed.toString();
-  } catch {
-    return value.split(/[?#]/, 1)[0] || value;
-  }
-}
+  /(?:^~\/|^[a-z]:[\\/]|^\/(?:Users|Applications|Volumes|private|tmp|var|Library)\b|[\\/](?:Library|Application Support|Google|Chrome|Chromium)[\\/]|user-data-dir|\bprofile\b|chrome:\/\/|devtools|ws:\/\/|wss:\/\/|file:\/\/)/i;
 
 /**
- * Matches an absolute URL *anywhere* inside a string, not only one that is the
- * whole string. A diagnostic like `"redirected to https://idp…?token=SECRET then
- * back"` carries its secret mid-sentence, so sanitizing only whole-string URLs
- * (the old `looksLikeUrl` gate) left that query in place. Each match is run
- * through `sanitizeBrowserUrl`, which strips query, fragment, and userinfo.
+ * An opaque / non-hierarchical URL scheme in free-form prose. These have no clean `//`
+ * authority+path to sanitize in place — the payload after `:` is arbitrary (a data URI
+ * body, a `javascript:` script, a `mailto:` query) and can carry a secret that no URL
+ * parser delimits — so a diagnostic containing one is redacted wholesale.
  */
-const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+/gi;
+const OPAQUE_URL_SCHEME_PATTERN = /\b(?:data|javascript|vbscript|blob|filesystem|chrome-extension|mailto|file):[^\s]/i;
 
 /**
  * A credential *assignment* (`token=…`, `password: …`, `api_key=…`, …) or an auth
@@ -41,30 +31,62 @@ const ABSOLUTE_URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'<>]+/gi;
  * scheduled"`, `"authorization endpoint"`) does NOT match and is kept.
  */
 const CREDENTIAL_ASSIGNMENT_PATTERN =
-  /\b(?:authorization|password|passwd|pwd|secret|client[-_]?secret|access[-_]?token|refresh[-_]?token|id[-_]?token|token|api[-_]?key|apikey|x-api-key|otp|mfa|signature|sig|cookie|set-cookie)\b\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
+  /(?<![a-z0-9])(?:authorization|password|passwd|pwd|secret|client[-_]?secret|private[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|jwt|api[-_]?key|apikey|x-api-key|otp|mfa|signature|sig|csrf|xsrf|pat|auth[-_]?code|session[-_]?id|cookie|set-cookie)(?![a-z0-9])\s*[:=]\s*\S|\b(?:bearer|basic)\s+\S/i;
 
 /**
- * Strip secrets from a free-form diagnostic string. URLs are handled precisely
- * (they CAN be delimited): absolute URLs are sanitized in place wherever they
- * appear, and a whole-string relative/schemeless ref carrying a query/fragment is
- * trimmed at the first delimiter. After that, if a credential assignment or auth
- * scheme still survives in the prose, the string is redacted wholesale — see
- * `CREDENTIAL_ASSIGNMENT_PATTERN` for why surgical excision is unsafe there.
+ * Fold a string to a canonical denylist VIEW (the returned value is never this —
+ * it only decides whether to redact). NFKD decomposes full-width / ligature forms
+ * to ASCII and splits accented letters into base + combining mark; then invisible
+ * format / default-ignorable chars AND combining marks (\p{M}) are stripped. So a
+ * zero-width split (`to<ZWSP>ken`), a full-width keyword (`devtools`/`Bearer`), and a
+ * combining-mark split (`to<acute>ken` / precomposed `se<accent>ret`) all collapse
+ * to the bare keyword. NFKC alone missed marks (it recomposes accents); NFKD + \p{M}
+ * closes the whole format/mark class by construction.
+ */
+function foldForDenylist(value: string): string {
+  return value.normalize('NFKD').replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}\p{M}]/gu, '');
+}
+
+/**
+ * A diagnostic value is "risky" if it embeds a URL or endpoint token: any `scheme://`,
+ * a scheme-relative `//host`, or a relative path carrying a `?`/`#`/`;`/`&` delimiter (a
+ * query, fragment, or matrix/path parameter -- the parts a secret rides in). A bare path
+ * with no delimiter (a route like `/api/users`) and plain prose are NOT risky.
+ */
+const RISKY_DIAGNOSTIC_PATTERN = /:\/\/|(?<![a-z0-9])(?:https?|ftp|wss?):[^\s"'<>]|(?<![a-z0-9])\/\/[^\s"'<>]|(?<![a-z0-9])\/[^\s"'<>]*(?:[?#;&]|%3[bf]|%26|%23)/i;
+
+/**
+ * Aggressive defense-in-depth for a free-form diagnostic string. Sanitizing a URL or
+ * endpoint IN PLACE is a long tail of edge cases -- a secret can ride in a query,
+ * fragment, matrix/path parameter, userinfo, an opaque-scheme body (data:/javascript:/
+ * mailto:), or a scheme-relative host -- so we do NOT try. Instead, if the value contains
+ * ANY URL/endpoint token (RISKY_DIAGNOSTIC_PATTERN or an opaque scheme) OR a credential
+ * assignment / auth-scheme value, the WHOLE string is redacted. Diagnostics are debug
+ * context, not a data channel; losing a string to guarantee no secret ever surfaces is
+ * the right trade. A bare path and plain prose are kept.
  */
 function sanitizeStringForDiagnostics(value: string): string {
-  let out = value.replace(ABSOLUTE_URL_PATTERN, (match) => sanitizeBrowserUrl(match));
-  if (out === value && !/\s/.test(out) && /[?#]/.test(out)) {
-    out = out.split(/[?#]/, 1)[0] || out;
-  }
-  if (CREDENTIAL_ASSIGNMENT_PATTERN.test(out)) {
+  // Fold (NFKD + strip invisible/format/mark chars) so a zero-width / compatibility char
+  // in a scheme name (`java<ZWJ>script:`) or a keyword cannot dodge any check below.
+  const folded = foldForDenylist(value);
+  if (
+    RISKY_DIAGNOSTIC_PATTERN.test(value) ||
+    RISKY_DIAGNOSTIC_PATTERN.test(folded) ||
+    OPAQUE_URL_SCHEME_PATTERN.test(value) ||
+    OPAQUE_URL_SCHEME_PATTERN.test(folded) ||
+    CREDENTIAL_ASSIGNMENT_PATTERN.test(folded)
+  ) {
     return REDACTED;
   }
-  return out;
+  return value;
 }
 
 function shouldRedactKey(key: string): boolean {
   if (BROWSER_REF_KEY_PATTERN.test(key)) return false;
-  return SENSITIVE_KEY_PATTERN.test(key);
+  // Fold the key name too (full-width / accented / combining-mark-split sensitive
+  // keys), mirroring the value-side fold — otherwise a disguised sensitive key dodges
+  // redaction and a keyword-free secret value leaks verbatim under it.
+  return SENSITIVE_KEY_PATTERN.test(key) || SENSITIVE_KEY_PATTERN.test(foldForDenylist(key));
 }
 
 function redactValue(key: string, value: unknown): unknown {
@@ -73,7 +95,9 @@ function redactValue(key: string, value: unknown): unknown {
     if (BROWSER_REF_KEY_PATTERN.test(key)) {
       return isOpaqueBrowserRef(value) ? value : REDACTED;
     }
-    if (PROFILE_LIKE_VALUE_PATTERN.test(value)) return REDACTED;
+    // test a folded view too, so a full-width / accented `devtools`/`chrome://`/
+    // `user-data-dir` endpoint or profile path cannot dodge the raw check (LEAK B).
+    if (PROFILE_LIKE_VALUE_PATTERN.test(value) || PROFILE_LIKE_VALUE_PATTERN.test(foldForDenylist(value))) return REDACTED;
     return sanitizeStringForDiagnostics(value);
   }
   if (Array.isArray(value)) {

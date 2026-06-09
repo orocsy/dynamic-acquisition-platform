@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **197 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **198 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -369,6 +369,16 @@ identifier that may legitimately contain a marker word, and it is only ever asse
 the transparent `daemon:…:session:…` ref (itself redacted in any echo via the `daemon:`
 check), so a marker word in a part never surfaces as a standalone secret. Findings trend
 9->5->5->3->3->3->1, shifting from leaks to over-reach. Tests: 197 pass / 0 fail.
+
+**An ELEVENTH codex re-review found ONE finding -- a genuine loopback-spelling LEAK (the
+same class as octal/decimal/IPv4-mapped): a fully-qualified `localhost.` (trailing root dot)
+or `localhost%2e` (new URL canonicalizes both to hostname `localhost.`) made
+`isLoopbackHost` return false, so a CDP endpoint at `http://localhost.:9222/devtools/...`
+persisted.** Fix: `isLoopbackHost` now trims a trailing root dot before the checks, AND
+(proactively, to converge the host-name class by RFC 6761) treats any `*.localhost`
+subdomain as loopback -- while a real domain with a `localhost` LABEL (`localhost.evil.com`)
+is correctly NOT matched. Tests: 198 pass / 0 fail. (User decision after round 10: finish
+the codex loop to ZERO findings, THEN Phase 3.4.)
 
 ## Design decisions already locked (don't relitigate)
 

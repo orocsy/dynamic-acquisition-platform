@@ -83,8 +83,15 @@ export function daemonIdFromEndpoint(endpoint: string): string {
  * prevents the health check from being pointed at an arbitrary remote host.
  */
 export function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+  // Lowercase, trim a trailing root dot, then strip IPv6 brackets. A fully-qualified
+  // `localhost.` / `127.0.0.1.` (and `localhost%2e`, which `new URL` canonicalizes to
+  // `localhost.`) resolves to loopback but would otherwise slip past the exact-string checks.
+  const host = hostname.toLowerCase().replace(/\.+$/, '').replace(/^\[|\]$/g, '');
+  // RFC 6761: `localhost` AND any `*.localhost` subdomain resolve to loopback. (`evil.com`
+  // with a `localhost` LABEL, e.g. `localhost.evil.com`, does NOT end in `.localhost`, so it
+  // is correctly not matched.)
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '127.0.0.1' || host === '::1') return true;
   if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
   // IPv4-mapped IPv6 loopback: `::ffff:127.x.x.x` (dotted) or `::ffff:7fxx:yyyy` (hex, the
   // form `new URL` canonicalizes `[::ffff:127.0.0.1]` to -> `::ffff:7f00:1`). The first hex

@@ -329,3 +329,23 @@ test('sanitizeUrlPreview recognizes only true IPv4-mapped loopback, not 7.x.x.x'
   // `::ffff:7f1:1` maps to 7.241.0.1 (public), not loopback -> kept (not dropped)
   assert.notEqual(sanitizeUrlPreview('http://[::ffff:7f1:1]:9222/x'), undefined);
 });
+
+// Codex re-review (round 11): a fully-qualified `localhost.` (trailing root dot) or
+// `localhost%2e` (new URL canonicalizes both to `localhost.`) resolves to loopback but
+// slipped past the exact-string check. isLoopbackHost now trims a trailing root dot, and
+// (RFC 6761, proactively) also treats any `*.localhost` subdomain as loopback.
+test('sanitizeUrlPreview drops trailing-dot and *.localhost loopback CDP endpoints', () => {
+  for (const u of [
+    'http://localhost.:9222/devtools/browser/RAW',
+    'http://localhost%2e:9222/json/version',
+    'http://127.0.0.1.:9222/devtools/x',
+    'http://localhost.:9222/anything',
+    'http://foo.localhost:9222/devtools/browser/RAW',
+    'http://app.dev.localhost:9222/json/version',
+  ])
+    assert.equal(sanitizeUrlPreview(u), undefined, `expected dropped: ${u}`);
+  // a public FQDN trailing dot, and a real domain that merely has a `localhost` LABEL, are
+  // NOT loopback -> kept
+  assert.notEqual(sanitizeUrlPreview('https://api.example.com./json/version'), undefined);
+  assert.equal(sanitizeUrlPreview('https://localhost.evil.com/json/version'), 'https://localhost.evil.com/json/version');
+});

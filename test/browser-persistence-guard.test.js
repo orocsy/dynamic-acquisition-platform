@@ -111,8 +111,15 @@ test('guardTransparentRef rejects a ws:// URL smuggled into a transparent ref', 
   const evil = 'daemon:ws://127.0.0.1:9222/devtools/browser/RAW:session:run_1';
   assert.throws(() => guardTransparentRef('transparentRef', evil), BrowserPersistenceError);
   assert.throws(() => toPersistableSessionRecord({ ...BASE, transparentRef: evil }), BrowserPersistenceError);
-  // a keyword-bearing segment is rejected too
-  assert.throws(() => guardTransparentRef('transparentRef', 'daemon:cookie:session:run'), BrowserPersistenceError);
+  // a STRUCTURAL smuggle in a segment (path/scheme/delimiter) is rejected too
+  assert.throws(() => guardTransparentRef('transparentRef', 'daemon:a/b:session:run'), BrowserPersistenceError);
+  // but a descriptive marker WORD as a segment is NOT a secret -> accepted. Ref parts
+  // (daemonId/runId) are runtime identifiers that legitimately contain words like
+  // `token`/`signature`/`cookie` (`run_signature_check`); only STRUCTURE is unsafe in a part.
+  assert.equal(
+    guardTransparentRef('transparentRef', 'daemon:cookie_check:session:run_token_001'),
+    'daemon:cookie_check:session:run_token_001',
+  );
   // a clean transparent ref still passes
   assert.equal(
     guardTransparentRef('transparentRef', 'daemon:daemon_local_1:session:run_1'),

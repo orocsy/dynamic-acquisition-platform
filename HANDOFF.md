@@ -26,7 +26,7 @@ is "done".
 (a FUSE-mount quirk, not a repo problem). Review via direct file reads, or try
 `git -c core.preloadindex=false diff`. Remote: `github.com/orocsy/dynamic-acquisition-platform`.
 
-Tests: **196 pass / 0 fail.** Browser layer is `src/browser/*` with 7
+Tests: **197 pass / 0 fail.** Browser layer is `src/browser/*` with 7
 `test/browser-*.js` files. An independent abuse probe (run outside the suite,
 per the gate below) is green this session.
 
@@ -353,6 +353,22 @@ browserObservationId|daemonId|targetRef)$`), so anything else falls through to t
 check; (3) the IPv4-mapped hex loopback match `7f[0-9a-f]{0,2}` wrongly accepted `::ffff:7f1:1`
 (= 7.241.0.1) -> tightened to `7f[0-9a-f]{2}` (exactly `0x7f00`-`0x7fff` = first byte 127).
 Tests: 196 pass / 0 fail.
+
+**A TENTH codex re-review found ONE finding -- and it flagged OVER-REACH, not a leak (a
+strong convergence signal): the credential-keyword denylist in `browserRef` rejected
+legitimate DESCRIPTIVE run/daemon ids like `run_signature_check` / `run_sim_wrong_token_001`
+(a real run id used in runtime-deterministic-simulation), so `createBrowserSessionRef`/
+`guardRefPart` threw and blocked browser setup -- a functional regression from my own
+hardening accretion (codex only ever requested the structural SCHEME detection, never the
+credential wordlist).** Fix: SPLIT `BROWSER_REF_UNSAFE_PATTERN` into `STRUCTURAL_REF_UNSAFE_PATTERN`
+(paths/slashes/delimiters/URL-schemes/generic-opaque-scheme) and `CREDENTIAL_KEYWORD_PATTERN`.
+`isOpaqueBrowserRef`/`isOpaqueSurrogateSessionId` keep BOTH (the echo path still redacts a
+secret-looking surrogate session id -- earlier codex findings preserved), but
+`isSafeBrowserRefPart` (daemonId/runId) is now STRUCTURAL-ONLY: a ref part is a runtime
+identifier that may legitimately contain a marker word, and it is only ever assembled into
+the transparent `daemon:…:session:…` ref (itself redacted in any echo via the `daemon:`
+check), so a marker word in a part never surfaces as a standalone secret. Findings trend
+9->5->5->3->3->3->1, shifting from leaks to over-reach. Tests: 197 pass / 0 fail.
 
 ## Design decisions already locked (don't relitigate)
 

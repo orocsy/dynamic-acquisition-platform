@@ -48,6 +48,23 @@ test('browser redaction masks query values and credential-like fields recursivel
   );
 });
 
+// Codex re-review (round 10): the credential-keyword denylist must NOT apply to ref PARTS
+// (daemonId/runId). A descriptive runtime id like `run_signature_check` or
+// `run_sim_wrong_token_001` (a real run id used in runtime-deterministic-simulation) is a
+// legitimate identifier, not a secret -- rejecting it broke browser setup for real runs.
+// Only STRUCTURAL smuggling (path/scheme/delimiter/whitespace) is unsafe in a part.
+test('createBrowserSessionRef accepts descriptive run/daemon ids containing marker words', () => {
+  for (const runId of ['run_sim_wrong_token_001', 'run_signature_check', 'run_token_refresh_001', 'run_mfa_otp_flow', 'run_csrf_xsrf_check'])
+    assert.equal(
+      createBrowserSessionRef({ daemonId: 'daemon_sig_check_1', runId }),
+      `daemon:daemon_sig_check_1:session:${runId}`,
+      runId,
+    );
+  // structural smuggling in a part is still rejected
+  for (const runId of ['run_001?cookie=secret', 'run/../x', 'run javascript:x'])
+    assert.throws(() => createBrowserSessionRef({ daemonId: 'daemon_local_1', runId }), /opaque browser ref part/, runId);
+});
+
 test('browser ref helpers reject profile-like refs and preserve opaque refs', () => {
   const sessionRef = createBrowserSessionRef({ daemonId: 'daemon_local_001', runId: 'run_browser_001' });
 

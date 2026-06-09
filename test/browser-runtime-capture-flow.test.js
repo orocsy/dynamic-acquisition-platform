@@ -93,3 +93,20 @@ test('flow drops unmappable (url-less) observations and counts them', async () =
   assert.equal(result.evidenceCount, 1);
   assert.equal(coordinator.calls[0].eventData.unmappableObservationCount, 1);
 });
+
+// Codex re-review of PR #3 (#1): recordNormalizedEvidence REPLACES evidenceRefs in the
+// checkpoint patch, so the flow must merge prior refs (creation / auth boundary) with this
+// capture's, or they are silently dropped.
+test('flow merges prior evidence refs instead of replacing them', async () => {
+  const session = await startedSession([safeObs('o1')]);
+  const coordinator = fakeCoordinator();
+  const result = await runBrowserNetworkCaptureFlow(
+    { session, coordinator },
+    { runId: 'run_1', pageTargetRef: 'page:t-1', expectedVersion: 3, priorEvidenceRefs: ['evidence-prior-1', 'evidence-prior-2'] },
+  );
+  assert.equal(result.recorded, true);
+  const sent = coordinator.calls[0].evidenceRefs;
+  assert.deepEqual(sent.slice(0, 2), ['evidence-prior-1', 'evidence-prior-2']); // prior, in order, first
+  assert.ok(sent.length >= 3); // + at least one new ref
+  assert.equal(new Set(sent).size, sent.length); // de-duped
+});

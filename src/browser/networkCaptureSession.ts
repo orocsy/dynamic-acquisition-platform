@@ -41,6 +41,46 @@ export class NotImplementedNetworkObservationSource implements NetworkObservatio
 }
 
 /**
+ * Rebuild an observation from ONLY the whitelisted BrowserObservation fields. The
+ * field-by-field invariant validates known URL/header/query/id fields but does not reject
+ * EXTRA keys, so a raw source could attach `rawRequestHeaders`/`postData` (with credentials)
+ * that would otherwise survive `stop()`/`listObservations()` and reach the normalizer. Run
+ * this AFTER `assertSafeBrowserObservation`, on an already-validated observation.
+ */
+function pickSafeObservation(observation: BrowserObservation): BrowserObservation {
+  const safe: BrowserObservation = {
+    id: observation.id,
+    runId: observation.runId,
+    source: observation.source,
+    capturedAt: observation.capturedAt,
+  };
+  if (observation.pageTargetRef !== undefined) safe.pageTargetRef = observation.pageTargetRef;
+  if (observation.request) {
+    const request = observation.request;
+    safe.request = { url: request.url, method: request.method };
+    if (request.headersPreview) safe.request.headersPreview = { ...request.headersPreview };
+    if (request.resourceType !== undefined) safe.request.resourceType = request.resourceType;
+    if (request.bodyShape !== undefined) safe.request.bodyShape = request.bodyShape;
+    if (Array.isArray(request.queryParamNames)) safe.request.queryParamNames = [...request.queryParamNames];
+  }
+  if (observation.response) {
+    const response = observation.response;
+    safe.response = {};
+    if (response.status !== undefined) safe.response.status = response.status;
+    if (response.mimeType !== undefined) safe.response.mimeType = response.mimeType;
+    if (response.headersPreview) safe.response.headersPreview = { ...response.headersPreview };
+    if (response.bodyShape !== undefined) safe.response.bodyShape = response.bodyShape;
+  }
+  if (observation.timing) {
+    const timing = observation.timing;
+    safe.timing = {};
+    if (timing.startedAt !== undefined) safe.timing.startedAt = timing.startedAt;
+    if (timing.durationMs !== undefined) safe.timing.durationMs = timing.durationMs;
+  }
+  return safe;
+}
+
+/**
  * In-memory capture session. `start` marks a (runId, pageTargetRef) window active; `stop`
  * collects raw observations from the source, runs each through `assertSafeBrowserObservation`
  * as a fail-safe gate (an unsafe one is EXCLUDED — never returned or stored — with a
@@ -67,25 +107,33 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     }
     this.#active.delete(key);
 
-    const raw = await this.#source.collect({ runId: input.runId, pageTargetRef: String(input.pageTargetRef) });
+    const expectedTarget = String(input.pageTargetRef);
+    const raw = await this.#source.collect({ runId: input.runId, pageTargetRef: expectedTarget });
     const observations: BrowserObservation[] = [];
     const diagnostics: Record<string, unknown>[] = [];
 
-    for (const observation of raw) {
+    raw.forEach((observation, index) => {
+      // Only accept observations belonging to THIS capture window. Stale/mixed buffered
+      // entries from another run/page would otherwise be stored under this run and corrupt
+      // its evidence. The diagnostic is positional only (the obs is source-controlled).
+      const sameRun = observation?.runId === input.runId;
+      const sameTarget =
+        observation?.pageTargetRef === undefined || String(observation.pageTargetRef) === expectedTarget;
+      if (!sameRun || !sameTarget) {
+        diagnostics.push({ level: 'warning', code: 'observation-window-mismatch-skipped', index });
+        return;
+      }
       try {
         assertSafeBrowserObservation(observation);
-        observations.push(observation);
-      } catch (error) {
-        // Drop the unsafe observation (never return/store it) and record a value-free
-        // diagnostic: assertSafeBrowserObservation's messages name the field, never the value.
-        diagnostics.push({
-          level: 'warning',
-          code: 'unsafe-observation-skipped',
-          observationId: typeof observation?.id === 'string' ? observation.id : undefined,
-          reason: error instanceof Error ? error.message : 'unsafe observation',
-        });
+        // Store ONLY the whitelisted fields, so an extra source-controlled property can't
+        // survive the gate (it validates known fields, not unknown keys).
+        observations.push(pickSafeObservation(observation));
+      } catch {
+        // A rejected observation is source-controlled: do NOT echo its id or the assertion
+        // message (which can name a header) -- a positional skip id leaks nothing.
+        diagnostics.push({ level: 'warning', code: 'unsafe-observation-skipped', index });
       }
-    }
+    });
 
     const existing = this.#observations.get(input.runId) ?? [];
     this.#observations.set(input.runId, [...existing, ...observations]);

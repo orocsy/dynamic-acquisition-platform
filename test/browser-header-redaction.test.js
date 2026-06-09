@@ -411,3 +411,16 @@ test('invariant validates request.queryParamNames as clean value-less name token
   for (const bad of [['a=b'], ['access_token=SECRET'], ['foo&bar'], ['x?y'], ['a#b'], ['a/b'], ['a\\b'], ['has space'], ['a%3Db'], ['']])
     assert.throws(() => assertSafeBrowserObservation(withNames(bad)), /queryParamNames/, JSON.stringify(bad));
 });
+
+// Codex re-review of PR #3 (#2, #3): a non-array queryParamNames (a bare string from daemon
+// JSON) would iterate per-character and pass, then crash the mapper; and the observation id
+// (copied into evidence source.ref + diagnostics) was never checked for opacity.
+test('invariant rejects a non-array queryParamNames and a non-opaque observation id', () => {
+  const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://api.example.com/v1/users', method: 'GET' } };
+  for (const qpn of ['page', 42, { 0: 'page' }])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, request: { ...base.request, queryParamNames: qpn } }), /queryParamNames must be an array/, JSON.stringify(qpn));
+  for (const id of ['https://evil.example/x', 'Bearer abc.def', 'a/b', 'obs id', 'a:b'])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque token/, id);
+  // a descriptive opaque id (even one containing a marker WORD) is accepted
+  assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'obs-123_token_req' }));
+});

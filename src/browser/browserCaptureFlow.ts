@@ -34,6 +34,9 @@ export type BrowserNetworkCaptureFlowInput = {
   artifactRefs?: readonly string[];
   lastCompletedStepId?: string;
   browserSessionRef?: string;
+  /** Evidence refs already on the checkpoint (creation / auth boundary); merged so the
+   *  coordinator's replace-semantics don't drop them. */
+  priorEvidenceRefs?: readonly string[];
 };
 
 export type BrowserNetworkCaptureFlowResult = {
@@ -58,6 +61,14 @@ function normalizerDiagnosticData(
 
 function captureDiagnosticLevel(level: unknown): RuntimeDiagnosticLevel {
   return level === 'error' || level === 'info' ? level : 'warning';
+}
+
+function mergeEvidenceRefs(prior: readonly string[] | undefined, next: readonly string[]): string[] {
+  const merged = [...(prior ?? [])];
+  for (const ref of next) {
+    if (!merged.includes(ref)) merged.push(ref);
+  }
+  return merged;
 }
 
 /**
@@ -109,7 +120,10 @@ export async function runBrowserNetworkCaptureFlow(
   }));
 
   const diagnostics = [...captureDiagnostics, ...normalizerDiagnostics];
-  const evidenceRefs = normalized.evidence.map((evidence) => evidence.evidenceId);
+  const newEvidenceRefs = normalized.evidence.map((evidence) => evidence.evidenceId);
+  // recordNormalizedEvidence REPLACES evidenceRefs in the checkpoint patch, so merge any
+  // prior refs (creation / auth boundary) with this capture's -- otherwise they are dropped.
+  const evidenceRefs = mergeEvidenceRefs(input.priorEvidenceRefs, newEvidenceRefs);
   const evidenceCount = normalized.evidence.length;
   const skippedCount = normalized.skipped.length;
 

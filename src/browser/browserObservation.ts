@@ -1,5 +1,5 @@
 import type { BrowserObservationId, PageTargetRef } from './types';
-import { isPageTargetRef } from './browserRef';
+import { isPageTargetRef, isSafeBrowserRefPart } from './browserRef';
 import { isLoopbackHost } from './daemonClient';
 
 export type BrowserObservationSource = 'cdp' | 'playwright' | 'daemon-fixture';
@@ -242,12 +242,16 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
 
 const CLEAN_QUERY_PARAM_NAME = /^[^\s%=&?#/\\\p{Cc}]+$/u;
 
-function assertQueryParamNamesSafe(names: string[] | undefined): void {
+function assertQueryParamNamesSafe(names: unknown): void {
   if (names === undefined) return;
-  // Each must be a clean, value-LESS name token: non-empty, bounded, and free of the value
-  // separator `=`, the param/url delimiters `&`/`?`/`#`, a slash/backslash, a percent (an
-  // encoded delimiter), whitespace, and control chars -- so a name can never smuggle a value
-  // or a URL delimiter into a persisted observation.
+  // Must be an ARRAY of clean, value-LESS name tokens. A non-array (e.g. a bare string from
+  // daemon JSON) would otherwise iterate per-character below, pass, and then make the mapper's
+  // `names.map(...)` throw rather than producing a safe skip. Each name: non-empty, bounded,
+  // and free of the value separator `=`, the param/url delimiters `&`/`?`/`#`, a slash/
+  // backslash, a percent (encoded delimiter), whitespace, and control chars.
+  if (!Array.isArray(names)) {
+    throw new Error('browser observation request.queryParamNames must be an array of clean value-less name tokens');
+  }
   for (const name of names) {
     if (typeof name !== 'string' || name.length === 0 || name.length > 256 || !CLEAN_QUERY_PARAM_NAME.test(name)) {
       throw new Error('browser observation request.queryParamNames must be clean value-less name tokens');
@@ -257,6 +261,12 @@ function assertQueryParamNamesSafe(names: string[] | undefined): void {
 
 export function assertSafeBrowserObservation(observation: BrowserObservation): void {
   assertJsonSafe(observation, 'observation');
+  // The id is copied into the mapped entry id -> evidence `source.ref` and runtime
+  // `entryId` diagnostics, so it must be an opaque token, never a raw URL/endpoint/secret a
+  // buggy source might supply as the request identifier. Structural-only (descriptive ids OK).
+  if (!isSafeBrowserRefPart(String(observation.id))) {
+    throw new Error('browser observation id must be an opaque token (no URL/path/scheme/colon/whitespace)');
+  }
   // request.url and pageTargetRef are persisted alongside the header previews, so the
   // invariant must validate them too: a prebuilt observation must not carry a raw
   // query/userinfo/endpoint in request.url, nor a non-page-shaped pageTargetRef.

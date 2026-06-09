@@ -42,13 +42,30 @@ const EVIDENCE_FORWARDABLE_HEADERS = new Set<string>([
   'authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-client-credential', 'x-auth-token',
 ]);
 
-function filterEvidenceHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+function filterEvidenceHeaders(headers: Record<string, unknown> | undefined): Record<string, string> | undefined {
   if (!headers) return undefined;
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
-    if (EVIDENCE_FORWARDABLE_HEADERS.has(name.toLowerCase())) out[name] = value;
+    // Forward a recognized name ONLY with a string value: a non-string JSON value
+    // (e.g. `content-type: {raw: 'Bearer ...'}`) would be persisted by the normalizer
+    // (including any nested secret fields), so drop it.
+    if (EVIDENCE_FORWARDABLE_HEADERS.has(name.toLowerCase()) && typeof value === 'string') out[name] = value;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// A constrained MIME type (`type/subtype` + optional params), not a secret-bearing free-form
+// string; bounded so a huge value can't ride into evidence.
+const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}(?:\s*;[ -~]{0,128})?$/i;
+function isCleanMimeType(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 256 && MIME_TYPE_PATTERN.test(value);
+}
+
+// Accept only an ISO-8601 timestamp; a non-ISO / secret-bearing string is rejected so it can't
+// ride into evidence as `timestamp`.
+const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+function isoTimestamp(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length <= 40 && ISO_TIMESTAMP_PATTERN.test(value) ? value : undefined;
 }
 
 export function mapBrowserObservationToNetworkEntry(observation: BrowserObservation): RawNetworkEntry | undefined {
@@ -66,28 +83,40 @@ export function mapBrowserObservationToNetworkEntry(observation: BrowserObservat
     return undefined;
   }
 
+  // Reject an unknown/missing source instead of mislabeling real traffic as `fixture`.
+  const source = SOURCE_MAP[observation.source];
+  if (!source) {
+    return undefined;
+  }
+
   const entry: RawNetworkEntry = {
     id: String(observation.id),
     url: withQueryParamNames(request.url, request.queryParamNames),
     method: request.method,
-    source: SOURCE_MAP[observation.source] ?? 'fixture',
+    source,
   };
 
   const requestHeaders = filterEvidenceHeaders(request.headersPreview);
   if (requestHeaders) entry.requestHeaders = requestHeaders;
-  if (request.resourceType !== undefined) entry.resourceType = request.resourceType;
+  if (typeof request.resourceType === 'string') entry.resourceType = request.resourceType;
 
   const response = observation.response;
   if (response) {
     const responseHeaders = filterEvidenceHeaders(response.headersPreview);
     if (responseHeaders) entry.responseHeaders = responseHeaders;
-    if (response.status !== undefined) entry.status = response.status;
-    if (response.mimeType !== undefined) entry.mimeType = response.mimeType;
+    // Only a numeric status / constrained MIME type reach evidence: a string status would
+    // mislabel, and a free-form mimeType could carry a secret.
+    if (typeof response.status === 'number' && Number.isInteger(response.status)) entry.status = response.status;
+    if (isCleanMimeType(response.mimeType)) entry.mimeType = response.mimeType;
   }
 
-  const startedAt = observation.timing?.startedAt ?? observation.capturedAt;
+  // Forward only an ISO-8601 timestamp (entry.startedAt is optional); omit a non-ISO /
+  // secret-bearing string so it cannot ride into evidence as `timestamp`.
+  const startedAt = isoTimestamp(observation.timing?.startedAt) ?? isoTimestamp(observation.capturedAt);
   if (startedAt !== undefined) entry.startedAt = startedAt;
-  if (observation.timing?.durationMs !== undefined) entry.durationMs = observation.timing.durationMs;
+  if (typeof observation.timing?.durationMs === 'number' && Number.isFinite(observation.timing.durationMs)) {
+    entry.durationMs = observation.timing.durationMs;
+  }
 
   return entry;
 }

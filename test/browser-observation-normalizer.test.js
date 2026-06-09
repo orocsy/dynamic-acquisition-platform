@@ -109,3 +109,30 @@ test('mapper skips a non-string method and drops unrecognized header names', () 
   assert.equal('x-api-key-SUPERSECRET' in entry.requestHeaders, false); // unrecognized name dropped
   assert.equal(JSON.stringify(entry).includes('SUPERSECRET'), false);
 });
+
+// Codex re-review of PR #3 (round 4): the mapper drops/rejects malformed field TYPES before
+// forwarding, so a buggy source can't mislabel provenance, crash the normalizer, or ride a
+// secret into evidence via a non-string value.
+test('mapper validates field types before forwarding', () => {
+  // unknown/missing source -> unmappable (not mislabeled as fixture)
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ source: 'har' })), undefined);
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ source: undefined })), undefined);
+  // non-string header value dropped
+  const e1 = mapBrowserObservationToNetworkEntry(obs({ request: { url: 'https://h/x', method: 'GET', headersPreview: { 'content-type': { raw: 'Bearer LEAKEDHDR' } } } }));
+  assert.equal(e1.requestHeaders, undefined);
+  assert.equal(JSON.stringify(e1).includes('LEAKEDHDR'), false);
+  // non-string resourceType dropped
+  assert.equal('resourceType' in mapBrowserObservationToNetworkEntry(obs({ request: { url: 'https://h/x', method: 'GET', resourceType: { x: 1 } } })), false);
+  // non-number status + free-form/secret mimeType dropped; clean numeric/mime kept
+  const e3 = mapBrowserObservationToNetworkEntry(obs({ response: { status: '200', mimeType: 'Bearer SECRETMIME' } }));
+  assert.equal('status' in e3, false);
+  assert.equal('mimeType' in e3, false);
+  assert.equal(JSON.stringify(e3).includes('SECRETMIME'), false);
+  const e4 = mapBrowserObservationToNetworkEntry(obs({ response: { status: 204, mimeType: 'text/html; charset=utf-8' } }));
+  assert.equal(e4.status, 204);
+  assert.equal(e4.mimeType, 'text/html; charset=utf-8');
+  // non-ISO / secret-bearing timestamps omitted
+  const e5 = mapBrowserObservationToNetworkEntry(obs({ timing: { startedAt: 'Bearer SECRETTIME' }, capturedAt: 'not-iso' }));
+  assert.equal('startedAt' in e5, false);
+  assert.equal(JSON.stringify(e5).includes('SECRET'), false);
+});

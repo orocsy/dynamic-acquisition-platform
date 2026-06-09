@@ -9,6 +9,7 @@ function safeObs(id, over = {}) {
   return {
     id,
     runId: 'run_1',
+    pageTargetRef: 'page:t-1',
     source: 'cdp',
     capturedAt: '2026-01-01T00:00:00.000Z',
     request: { url: 'https://api.example.com/v1/users', method: 'GET', queryParamNames: ['page'], ...(over.request || {}) },
@@ -72,6 +73,7 @@ test('a secret-bearing (unsanitized) observation is gated out and never reaches 
   const leaky = {
     id: 'leak',
     runId: 'run_1',
+    pageTargetRef: 'page:t-1',
     source: 'cdp',
     capturedAt: '2026-01-01T00:00:00.000Z',
     request: { url: 'https://api.example.com/v1/users?access_token=SUPERSECRETVALUE', method: 'GET' },
@@ -85,7 +87,7 @@ test('a secret-bearing (unsanitized) observation is gated out and never reaches 
 });
 
 test('flow drops unmappable (url-less) observations and counts them', async () => {
-  const noUrl = { id: 'nourl', runId: 'run_1', source: 'cdp', capturedAt: '2026-01-01T00:00:00.000Z', request: { method: 'GET' } };
+  const noUrl = { id: 'nourl', runId: 'run_1', pageTargetRef: 'page:t-1', source: 'cdp', capturedAt: '2026-01-01T00:00:00.000Z', request: { method: 'GET' } };
   const session = await startedSession([safeObs('o1'), noUrl]);
   const coordinator = fakeCoordinator();
   const result = await runBrowserNetworkCaptureFlow({ session, coordinator }, { runId: 'run_1', pageTargetRef: 'page:t-1', expectedVersion: 3 });
@@ -109,4 +111,37 @@ test('flow merges prior evidence refs instead of replacing them', async () => {
   assert.deepEqual(sent.slice(0, 2), ['evidence-prior-1', 'evidence-prior-2']); // prior, in order, first
   assert.ok(sent.length >= 3); // + at least one new ref
   assert.equal(new Set(sent).size, sent.length); // de-duped
+});
+
+// Codex re-review of PR #3 (#1): the flow accepts ANY session, so it must not copy a
+// source-controlled reason/observationId/extra field into the persisted runtime diagnostics.
+test('flow sanitizes untrusted session diagnostics before recording', async () => {
+  const session = {
+    start: async () => {},
+    listObservations: async () => [],
+    stop: async () => ({
+      observations: [safeObs('o1')],
+      diagnostics: [{ level: 'warning', code: 'evil code!!', reason: 'Bearer LEAKEDREASON', observationId: 'LEAKEDID', extra: 'LEAKEDEXTRA' }],
+    }),
+  };
+  const coordinator = fakeCoordinator();
+  await runBrowserNetworkCaptureFlow({ session, coordinator }, { runId: 'run_1', pageTargetRef: 'page:t-1', expectedVersion: 3, now: '2026-01-01T00:00:02.000Z' });
+  const persisted = JSON.stringify(coordinator.calls[0]);
+  for (const leak of ['LEAKEDREASON', 'LEAKEDID', 'LEAKEDEXTRA', 'evil code'])
+    assert.equal(persisted.includes(leak), false, `leaked: ${leak}`);
+});
+
+// Codex re-review of PR #3 (#2): the normalizer restarts evidence ids at evidence_001 each
+// run, so the flow scopes its refs -- a prior bare id is not collided/deduped away.
+test('flow scopes evidence refs so they do not collide with a prior bare id', async () => {
+  const session = await startedSession([safeObs('o1')]);
+  const coordinator = fakeCoordinator();
+  await runBrowserNetworkCaptureFlow(
+    { session, coordinator },
+    { runId: 'run_1', pageTargetRef: 'page:t-1', expectedVersion: 7, priorEvidenceRefs: ['evidence_001'] },
+  );
+  const sent = coordinator.calls[0].evidenceRefs;
+  assert.ok(sent.includes('evidence_001')); // prior preserved
+  assert.ok(sent.some((r) => r.startsWith('cap-v7:'))); // this capture's ref is scoped
+  assert.ok(sent.length >= 2); // both present (no collision)
 });

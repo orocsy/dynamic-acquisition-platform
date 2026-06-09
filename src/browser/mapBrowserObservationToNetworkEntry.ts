@@ -28,10 +28,41 @@ function withQueryParamNames(url: string, names: readonly string[] | undefined):
   return url.includes('?') ? `${url}&${query}` : `${url}?${query}`;
 }
 
+// Header NAMES safe to forward into evidence: low-cardinality protocol headers (their names
+// are useful signal) plus the auth-signal headers the normalizer keys on (their VALUE is
+// already `[redacted]` at construction, and their name is excluded from persisted
+// safeHeaderNames). Any OTHER name is dropped: the observation gate skips header-NAME checks
+// when the value is `[redacted]`, so a source-controlled name like `x-api-key-<secret>` could
+// otherwise reach persisted evidence via the normalizer's safeHeaderNames.
+const EVIDENCE_FORWARDABLE_HEADERS = new Set<string>([
+  'accept', 'accept-encoding', 'accept-language', 'cache-control', 'content-type',
+  'content-length', 'content-encoding', 'content-disposition', 'content-location', 'date',
+  'last-modified', 'server', 'vary', 'etag', 'location', 'referer', 'origin',
+  'x-content-type-options', 'x-frame-options',
+  'authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-client-credential', 'x-auth-token',
+]);
+
+function filterEvidenceHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (EVIDENCE_FORWARDABLE_HEADERS.has(name.toLowerCase())) out[name] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function mapBrowserObservationToNetworkEntry(observation: BrowserObservation): RawNetworkEntry | undefined {
   const request = observation.request;
-  if (!request || !request.url) {
-    // The caller records a skipped diagnostic; the normalizer would also skip a missing URL.
+  // A url-less observation, or one whose url/method is not a non-empty string (malformed
+  // daemon JSON), is unmappable -> undefined (a safe skip), never forwarded: a non-string
+  // method would crash the normalizer's `.toUpperCase()` and abort the whole capture flow.
+  if (
+    !request ||
+    typeof request.url !== 'string' ||
+    request.url.length === 0 ||
+    typeof request.method !== 'string' ||
+    request.method.length === 0
+  ) {
     return undefined;
   }
 
@@ -42,12 +73,14 @@ export function mapBrowserObservationToNetworkEntry(observation: BrowserObservat
     source: SOURCE_MAP[observation.source] ?? 'fixture',
   };
 
-  if (request.headersPreview) entry.requestHeaders = request.headersPreview;
+  const requestHeaders = filterEvidenceHeaders(request.headersPreview);
+  if (requestHeaders) entry.requestHeaders = requestHeaders;
   if (request.resourceType !== undefined) entry.resourceType = request.resourceType;
 
   const response = observation.response;
   if (response) {
-    if (response.headersPreview) entry.responseHeaders = response.headersPreview;
+    const responseHeaders = filterEvidenceHeaders(response.headersPreview);
+    if (responseHeaders) entry.responseHeaders = responseHeaders;
     if (response.status !== undefined) entry.status = response.status;
     if (response.mimeType !== undefined) entry.mimeType = response.mimeType;
   }

@@ -9,6 +9,7 @@ function safeObs(id) {
   return {
     id,
     runId: 'run_1',
+    pageTargetRef: 'page:t-1',
     source: 'cdp',
     capturedAt: '2026-01-01T00:00:00.000Z',
     request: { url: 'https://api.example.com/v1/users', method: 'GET', queryParamNames: ['page'] },
@@ -85,7 +86,7 @@ test('session stores only whitelisted observation fields (extra keys are dropped
 // Codex re-review of PR #3 (#6): a rejected observation is source-controlled, so its id and
 // the assertion message (which can name a header) must NOT be echoed into diagnostics.
 test('rejected-observation diagnostic echoes neither the source id nor the assertion message', async () => {
-  const evil = { id: 'Bearer SUPERSECRETID', runId: 'run_1', source: 'cdp', capturedAt: '2026-01-01T00:00:00.000Z', request: { url: 'https://h/x', method: 'GET' } };
+  const evil = { id: 'Bearer SUPERSECRETID', runId: 'run_1', pageTargetRef: 'page:t-1', source: 'cdp', capturedAt: '2026-01-01T00:00:00.000Z', request: { url: 'https://h/x', method: 'GET' } };
   const session = new BrowserNetworkCaptureSession(fakeSource([evil]));
   await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
   const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
@@ -93,4 +94,34 @@ test('rejected-observation diagnostic echoes neither the source id nor the asser
   assert.equal(result.diagnostics[0].code, 'unsafe-observation-skipped');
   assert.equal(result.diagnostics[0].observationId, undefined);
   assert.equal(JSON.stringify(result).includes('SUPERSECRETID'), false);
+});
+
+// Codex re-review of PR #3 (#5): a transient collect() failure must not make the capture
+// unrecoverable -- the active window survives so stop() can be retried.
+test('a failed collect leaves the capture window active for retry', async () => {
+  let calls = 0;
+  const flaky = {
+    collect: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('transient daemon error');
+      return [safeObs('o1')];
+    },
+  };
+  const session = new BrowserNetworkCaptureSession(flaky);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /transient/);
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // retry succeeds
+  assert.deepEqual(result.observations.map((o) => o.id), ['o1']);
+});
+
+// Codex re-review of PR #3 (#6): a same-run observation MISSING pageTargetRef must not be
+// stored under the active page window (it would contaminate this page's evidence).
+test('session skips a same-run observation missing pageTargetRef', async () => {
+  const noTarget = { ...safeObs('no-tgt') };
+  delete noTarget.pageTargetRef;
+  const session = new BrowserNetworkCaptureSession(fakeSource([safeObs('ok'), noTarget]));
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations.map((o) => o.id), ['ok']);
+  assert.equal(result.diagnostics.filter((d) => d.code === 'observation-window-mismatch-skipped').length, 1);
 });

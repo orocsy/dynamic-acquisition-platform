@@ -89,3 +89,23 @@ test('auth-like observation produces sanitized evidence (already-redacted header
   // the secret itself is never present
   assert.equal(JSON.stringify(evidence).toLowerCase().includes('bearer '), false);
 });
+
+// Codex re-review of PR #3 (#3, #4): a non-string method is unmappable (would crash the
+// normalizer), and an unrecognized header NAME (a redacted value doesn't make the NAME safe)
+// is dropped before forwarding while protocol/auth-signal names are kept.
+test('mapper skips a non-string method and drops unrecognized header names', () => {
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ request: { url: 'https://h/x', method: 42 } })), undefined);
+  const entry = mapBrowserObservationToNetworkEntry(
+    obs({
+      request: {
+        url: 'https://h/x',
+        method: 'GET',
+        headersPreview: { 'content-type': 'application/json', authorization: '[redacted]', 'x-api-key-SUPERSECRET': '[redacted]' },
+      },
+    }),
+  );
+  assert.equal(entry.requestHeaders['content-type'], 'application/json');
+  assert.equal(entry.requestHeaders.authorization, '[redacted]'); // auth-signal name kept (value redacted)
+  assert.equal('x-api-key-SUPERSECRET' in entry.requestHeaders, false); // unrecognized name dropped
+  assert.equal(JSON.stringify(entry).includes('SUPERSECRET'), false);
+});

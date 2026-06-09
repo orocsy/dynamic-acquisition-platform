@@ -105,20 +105,24 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     if (!this.#active.has(key)) {
       throw new Error('network capture stop requires a prior start for this run/pageTargetRef');
     }
-    this.#active.delete(key);
 
     const expectedTarget = String(input.pageTargetRef);
+    // Collect BEFORE clearing the active window, so a transient collect failure leaves the
+    // capture retryable (stop() can be called again) instead of failing 'requires a prior
+    // start' forever.
     const raw = await this.#source.collect({ runId: input.runId, pageTargetRef: expectedTarget });
+    this.#active.delete(key);
+
     const observations: BrowserObservation[] = [];
     const diagnostics: Record<string, unknown>[] = [];
 
     raw.forEach((observation, index) => {
-      // Only accept observations belonging to THIS capture window. Stale/mixed buffered
-      // entries from another run/page would otherwise be stored under this run and corrupt
-      // its evidence. The diagnostic is positional only (the obs is source-controlled).
+      // Accept ONLY observations stamped with THIS exact (runId, pageTargetRef) window. A
+      // same-run entry MISSING pageTargetRef (or from another run/page) is buffered/stale and
+      // would contaminate this page's evidence -> skip it. The diagnostic is positional only.
       const sameRun = observation?.runId === input.runId;
       const sameTarget =
-        observation?.pageTargetRef === undefined || String(observation.pageTargetRef) === expectedTarget;
+        observation?.pageTargetRef !== undefined && String(observation.pageTargetRef) === expectedTarget;
       if (!sameRun || !sameTarget) {
         diagnostics.push({ level: 'warning', code: 'observation-window-mismatch-skipped', index });
         return;

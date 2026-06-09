@@ -273,6 +273,11 @@ export function assertSafeBrowserObservation(observation: BrowserObservation): v
   if (observation.request?.url !== undefined && !isSanitizedUrlField(observation.request.url)) {
     throw new Error('browser observation request.url must be a sanitized http(s) URL or relative path');
   }
+  // A non-string method (malformed daemon JSON) would crash the normalizer's `.toUpperCase()`
+  // downstream; reject it at the gate so the run isn't aborted by one bad observation.
+  if (observation.request !== undefined && (typeof observation.request.method !== 'string' || observation.request.method.length === 0)) {
+    throw new Error('browser observation request.method must be a non-empty string');
+  }
   assertQueryParamNamesSafe(observation.request?.queryParamNames);
   if (observation.pageTargetRef !== undefined && !isPageTargetRef(observation.pageTargetRef)) {
     throw new Error('browser observation pageTargetRef must be an opaque page target ref (page:<id>)');

@@ -37,6 +37,10 @@ export type BrowserNetworkCaptureFlowInput = {
   /** Evidence refs already on the checkpoint (creation / auth boundary); merged so the
    *  coordinator's replace-semantics don't drop them. */
   priorEvidenceRefs?: readonly string[];
+  /** Unique per capture invocation; prefixes this capture's evidence refs so the normalizer's
+   *  re-used `evidence_NNN` ids can't collide with prior refs across captures of the same run.
+   *  Defaults to a checkpoint-version scope. */
+  captureId?: string;
 };
 
 export type BrowserNetworkCaptureFlowResult = {
@@ -105,10 +109,13 @@ export async function runBrowserNetworkCaptureFlow(
 
   const captureDiagnostics: RuntimeDiagnostic[] = capture.diagnostics.map((diagnostic) => ({
     level: captureDiagnosticLevel(diagnostic.level),
-    code: `browser-capture.${typeof diagnostic.code === 'string' ? diagnostic.code : 'diagnostic'}`,
-    message: typeof diagnostic.reason === 'string' ? diagnostic.reason : 'browser capture diagnostic',
+    // The session is UNTRUSTED (the flow accepts any NetworkCaptureSession): carry only a
+    // sanitized code + a numeric index. Never copy a source-controlled `reason`/`observationId`/
+    // header name into the persisted runtime diagnostics.
+    code: `browser-capture.${typeof diagnostic.code === 'string' && /^[a-z0-9-]+$/i.test(diagnostic.code) ? diagnostic.code : 'diagnostic'}`,
+    message: 'Browser network capture diagnostic',
     ...(input.now ? { at: input.now } : {}),
-    ...(typeof diagnostic.observationId === 'string' ? { data: { observationId: diagnostic.observationId } } : {}),
+    ...(typeof diagnostic.index === 'number' && Number.isInteger(diagnostic.index) ? { data: { index: diagnostic.index } } : {}),
   }));
 
   const normalizerDiagnostics: RuntimeDiagnostic[] = normalized.diagnostics.map((diagnostic) => ({
@@ -120,7 +127,11 @@ export async function runBrowserNetworkCaptureFlow(
   }));
 
   const diagnostics = [...captureDiagnostics, ...normalizerDiagnostics];
-  const newEvidenceRefs = normalized.evidence.map((evidence) => evidence.evidenceId);
+  // The normalizer restarts its evidence ids at `evidence_001` every invocation, so prefix
+  // them with a capture-unique scope -- otherwise a second capture of the same run produces
+  // refs that collide with `priorEvidenceRefs` and get deduped away (losing the reference).
+  const captureScope = input.captureId ?? `cap-v${input.expectedVersion}`;
+  const newEvidenceRefs = normalized.evidence.map((evidence) => `${captureScope}:${evidence.evidenceId}`);
   // recordNormalizedEvidence REPLACES evidenceRefs in the checkpoint patch, so merge any
   // prior refs (creation / auth boundary) with this capture's -- otherwise they are dropped.
   const evidenceRefs = mergeEvidenceRefs(input.priorEvidenceRefs, newEvidenceRefs);

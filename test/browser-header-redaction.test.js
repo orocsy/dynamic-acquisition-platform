@@ -424,3 +424,12 @@ test('invariant rejects a non-array queryParamNames and a non-opaque observation
   // a descriptive opaque id (even one containing a marker WORD) is accepted
   assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'obs-123_token_req' }));
 });
+
+// Codex re-review of PR #3 (#3): a non-string request.method would crash the normalizer's
+// .toUpperCase() and abort the whole capture flow -- reject it at the gate.
+test('invariant rejects a non-string or empty request.method', () => {
+  const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't' };
+  for (const method of [42, null, '', true, ['GET']])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, request: { url: 'https://api.example.com/x', method } }), /method must be a non-empty string/, JSON.stringify(method));
+  assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, request: { url: 'https://api.example.com/x', method: 'POST' } }));
+});

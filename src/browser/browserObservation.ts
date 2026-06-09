@@ -262,10 +262,12 @@ function assertQueryParamNamesSafe(names: unknown): void {
 export function assertSafeBrowserObservation(observation: BrowserObservation): void {
   assertJsonSafe(observation, 'observation');
   // The id is copied into the mapped entry id -> evidence `source.ref` and runtime
-  // `entryId` diagnostics, so it must be an opaque token, never a raw URL/endpoint/secret a
-  // buggy source might supply as the request identifier. Structural-only (descriptive ids OK).
-  if (!isSafeBrowserRefPart(String(observation.id))) {
-    throw new Error('browser observation id must be an opaque token (no URL/path/scheme/colon/whitespace)');
+  // `entryId` diagnostics, so it must be an opaque STRING token, never a raw URL/endpoint/
+  // secret a buggy source might supply. Require an actual string (not String()-coerced): a
+  // non-string id (e.g. `["sk_live_..."]`) would pass a coerced check yet be stored/returned
+  // verbatim by pickSafeObservation. Structural-only (descriptive ids OK).
+  if (typeof observation.id !== 'string' || !isSafeBrowserRefPart(observation.id)) {
+    throw new Error('browser observation id must be an opaque string token (no URL/path/scheme/colon/whitespace)');
   }
   // request.url and pageTargetRef are persisted alongside the header previews, so the
   // invariant must validate them too: a prebuilt observation must not carry a raw

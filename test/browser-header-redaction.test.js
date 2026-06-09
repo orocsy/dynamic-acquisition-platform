@@ -420,7 +420,10 @@ test('invariant rejects a non-array queryParamNames and a non-opaque observation
   for (const qpn of ['page', 42, { 0: 'page' }])
     assert.throws(() => assertSafeBrowserObservation({ ...base, request: { ...base.request, queryParamNames: qpn } }), /queryParamNames must be an array/, JSON.stringify(qpn));
   for (const id of ['https://evil.example/x', 'Bearer abc.def', 'a/b', 'obs id', 'a:b'])
-    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque token/, id);
+    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque/, id);
+  // a non-string id (malformed daemon JSON) is rejected, not String()-coerced
+  for (const id of [['sk_live_SECRET'], 42, null, true])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque string token/, JSON.stringify(id));
   // a descriptive opaque id (even one containing a marker WORD) is accepted
   assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'obs-123_token_req' }));
 });

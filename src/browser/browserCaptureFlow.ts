@@ -1,7 +1,7 @@
 import type { RunCheckpoint, RuntimeDiagnostic, RuntimeDiagnosticLevel, RuntimeSafeData } from '../runtime/types';
 import type { RuntimeCoordinatorTransitionInput } from '../runtime/runtimeCoordinator';
 import { normalizeNetworkEvidence } from '../discovery/network';
-import type { NetworkEvidenceNormalizerInput, NetworkEvidenceNormalizerResult } from '../discovery/network/types';
+import type { Evidence, NetworkEvidenceNormalizerInput, NetworkEvidenceNormalizerResult } from '../discovery/network/types';
 import { mapBrowserObservationToNetworkEntry } from './mapBrowserObservationToNetworkEntry';
 import type { NetworkCaptureSession } from './networkCaptureSession';
 import type { PageTargetRef } from './types';
@@ -46,6 +46,8 @@ export type BrowserNetworkCaptureFlowInput = {
 export type BrowserNetworkCaptureFlowResult = {
   recorded: boolean;
   checkpoint?: RunCheckpoint;
+  /** This capture's evidence, with capture-scoped `evidenceId`s that EQUAL `evidenceRefs`. */
+  evidence: Evidence[];
   evidenceRefs: string[];
   evidenceCount: number;
   skippedCount: number;
@@ -131,7 +133,14 @@ export async function runBrowserNetworkCaptureFlow(
   // them with a capture-unique scope -- otherwise a second capture of the same run produces
   // refs that collide with `priorEvidenceRefs` and get deduped away (losing the reference).
   const captureScope = input.captureId ?? `cap-v${input.expectedVersion}`;
-  const newEvidenceRefs = normalized.evidence.map((evidence) => `${captureScope}:${evidence.evidenceId}`);
+  // Scope the actual evidence IDs (not just the refs) so the checkpoint refs ALWAYS equal the
+  // emitted evidence ids -- otherwise a context that resolves refs against evidence ids finds
+  // browser-capture evidence dangling. The scoped evidence is returned for the caller to store.
+  const scopedEvidence: Evidence[] = normalized.evidence.map((evidence) => ({
+    ...evidence,
+    evidenceId: `${captureScope}:${evidence.evidenceId}`,
+  }));
+  const newEvidenceRefs = scopedEvidence.map((evidence) => evidence.evidenceId);
   // recordNormalizedEvidence REPLACES evidenceRefs in the checkpoint patch, so merge any
   // prior refs (creation / auth boundary) with this capture's -- otherwise they are dropped.
   const evidenceRefs = mergeEvidenceRefs(input.priorEvidenceRefs, newEvidenceRefs);
@@ -140,7 +149,7 @@ export async function runBrowserNetworkCaptureFlow(
 
   // Failed validation -> do NOT transition the run (no recordNormalizedEvidence call).
   if (normalized.diagnostics.some((diagnostic) => diagnostic.level === 'error')) {
-    return { recorded: false, evidenceRefs, evidenceCount, skippedCount, diagnostics };
+    return { recorded: false, evidence: scopedEvidence, evidenceRefs, evidenceCount, skippedCount, diagnostics };
   }
 
   const checkpoint = await deps.coordinator.recordNormalizedEvidence({
@@ -161,5 +170,5 @@ export async function runBrowserNetworkCaptureFlow(
     },
   });
 
-  return { recorded: true, checkpoint, evidenceRefs, evidenceCount, skippedCount, diagnostics };
+  return { recorded: true, checkpoint, evidence: scopedEvidence, evidenceRefs, evidenceCount, skippedCount, diagnostics };
 }

@@ -145,3 +145,16 @@ test('flow scopes evidence refs so they do not collide with a prior bare id', as
   assert.ok(sent.some((r) => r.startsWith('cap-v7:'))); // this capture's ref is scoped
   assert.ok(sent.length >= 2); // both present (no collision)
 });
+
+// Codex re-review of PR #3 (round 3): the scoped refs must EQUAL the emitted evidence ids
+// (not just be prefixed), so resolving a ref against returned evidence never dangles.
+test('returned evidence carries the scoped evidenceId that equals its ref', async () => {
+  const session = await startedSession([safeObs('o1')]);
+  const coordinator = fakeCoordinator();
+  const result = await runBrowserNetworkCaptureFlow({ session, coordinator }, { runId: 'run_1', pageTargetRef: 'page:t-1', expectedVersion: 5 });
+  assert.ok(result.evidence.length >= 1);
+  for (const ev of result.evidence) {
+    assert.ok(ev.evidenceId.startsWith('cap-v5:'), ev.evidenceId);
+    assert.ok(result.evidenceRefs.includes(ev.evidenceId)); // ref == emitted evidence id
+  }
+});

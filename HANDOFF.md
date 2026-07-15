@@ -29,8 +29,12 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   (2026-07-15, 4 P2) closed the `%3A` gap in the ABSOLUTE try-branches (header
   sanitizer + `sanitizeUrlPreview` pathname splits), added an encoded-scheme
   alternative to the diagnostics risky-pattern (`http%3a//…`), and bounded the
-  method length before uppercasing. Tests: 246 pass / 0 fail. Awaiting next codex
-  round; merge at zero findings, then Phase 3.5.
+  method length before uppercasing. Round 9 (2026-07-15) returned ZERO findings
+  ("Didn't find any major issues", reviewed commit fe6a9a9) — the loop converged
+  7→4→3→4→0. Tests: 246 pass / 0 fail. **PR #3 is READY TO MERGE (user action —
+  agent merge was permission-gated); after merge, next slice is Phase 3.5.**
+  (Ops note: codex posts a ZERO-findings result as an ISSUE comment, not a PR
+  review — poll issues/comments too when watching for it.)
 - **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
   a structural + credential-keyword denylist; a keyword-free random secret used AS
   an id is indistinguishable from a legit opaque id. If codex re-flags this, the

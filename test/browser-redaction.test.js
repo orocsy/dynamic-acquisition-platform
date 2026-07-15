@@ -627,3 +627,13 @@ test('redactBrowserDiagnosticData redacts sig + camelCase credential keys, keeps
   assert.equal(redactBrowserDiagnosticData({ pageTargetRef: 'page:t-1' }).pageTargetRef, 'page:t-1');
   assert.equal(redactBrowserDiagnosticData({ targetRef: 'page:t-2' }).targetRef, 'page:t-2');
 });
+
+// Codex re-review of PR #3 (round 8): an ENCODED scheme delimiter (`http%3a//...`) has no
+// literal `://`, no leading slash, and no later encoded delimiter -- it must still count as
+// URL-bearing and redact the whole diagnostic string.
+test('diagnostics redact an encoded-colon scheme endpoint', () => {
+  assert.equal(redactBrowserDiagnosticData({ note: 'redirect to http%3a//127.0.0.1:9222/devtools/browser/RAW' }).note, '[redacted]');
+  assert.equal(redactBrowserDiagnosticData({ note: 'wss%3A//10.0.0.5/devtools' }).note, '[redacted]');
+  // plain prose with no URL-ish token is still kept
+  assert.equal(redactBrowserDiagnosticData({ note: 'retry scheduled after backoff' }).note, 'retry scheduled after backoff');
+});

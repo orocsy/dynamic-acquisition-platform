@@ -488,3 +488,30 @@ test('invariant rejects acronym-camel credential-marker observation ids', () => 
   for (const id of ['clientSECRETValue', 'sessionAPIKEYValue', 'run_CSRFDefense'])
     assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque, credential-free string token/, id);
 });
+
+// Codex re-review of PR #3 (round 8): the header sanitizer's ABSOLUTE branch split its
+// pathname on %3b/%26/%3f/%23 but not %3a, so an encoded-colon smuggle survived
+// construction (and then tripped the invariant); the method gate also uppercased
+// unbounded strings before rejecting them.
+test('toSafeHeaderPreview strips an encoded-colon segment from an absolute Location', () => {
+  const preview = toSafeHeaderPreview({
+    Location: 'https://app.example.com/http%3a//127.0.0.1%3a9222/devtools/browser/RAW',
+  });
+  assert.equal(preview.location, 'https://app.example.com/http');
+  const blob = JSON.stringify(preview);
+  assert.equal(blob.includes('127.0.0.1'), false);
+  assert.equal(blob.includes('RAW'), false);
+  // and the constructed preview still passes the invariant
+  assert.doesNotThrow(() =>
+    assertSafeBrowserObservation({
+      id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't',
+      response: { status: 302, headersPreview: preview },
+    }),
+  );
+});
+
+test('invariant rejects an overlong method without scanning it', () => {
+  const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't' };
+  const huge = 'GET'.repeat(100000);
+  assert.throws(() => assertSafeBrowserObservation({ ...base, request: { url: 'https://api.example.com/x', method: huge } }), /method must be a valid HTTP method token/);
+});

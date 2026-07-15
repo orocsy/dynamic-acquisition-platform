@@ -141,7 +141,9 @@ function sanitizeHeaderUrlValue(value: string): string {
     }
     // Drop RFC-3986 path parameters too (`;jsessionid=…`, stray `&…`) — they sit in
     // pathname, not search, so a session id in a redirect Location would survive.
-    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23/i)[0];
+    // `%3a` included: an encoded colon in an ABSOLUTE path re-opens the smuggle once a
+    // consumer decodes it (`https://app.example.com/http%3a//127.0.0.1%3a9222/...`).
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23|%3a/i)[0];
     return parsed.toString();
   } catch {
     // Keep ONLY a clean relative path; drop scheme-relative or whitespace/tab/control/
@@ -254,8 +256,11 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
 // fixtures may not. Shared by the observation gate (so an unsafe method never survives
 // stop()/listObservations()) and the mapper (defense for observations that bypassed the gate).
 const HTTP_METHOD_ALLOWLIST = new Set(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'TRACE', 'CONNECT']);
+// Bound the length BEFORE uppercasing: an untrusted source can supply a huge method string,
+// and duplicating it just to reject it is avoidable CPU/memory pressure during stop()/mapping.
+const HTTP_METHOD_MAX_LENGTH = Math.max(...[...HTTP_METHOD_ALLOWLIST].map((m) => m.length));
 export function isHttpMethodToken(value: unknown): value is string {
-  return typeof value === 'string' && HTTP_METHOD_ALLOWLIST.has(value.toUpperCase());
+  return typeof value === 'string' && value.length <= HTTP_METHOD_MAX_LENGTH && HTTP_METHOD_ALLOWLIST.has(value.toUpperCase());
 }
 
 // The base `type/subtype` of a MIME type, with any parameters (`; charset=...`) STRIPPED: a

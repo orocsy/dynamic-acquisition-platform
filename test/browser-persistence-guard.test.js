@@ -359,3 +359,13 @@ test('sanitizeUrlPreview drops colon-smuggled relative previews', () => {
   assert.equal(sanitizeUrlPreview('/a:b'), undefined);
   assert.equal(sanitizeUrlPreview('/api/v2/users'), '/api/v2/users'); // clean path still kept
 });
+
+// Codex re-review of PR #3 (round 8): the `%3a` rejection only ran in the relative branch;
+// an ABSOLUTE preview kept an encoded-colon path segment that decodes back into a smuggled
+// endpoint -> the pathname split now drops it.
+test('sanitizeUrlPreview strips an encoded-colon segment from an absolute preview', () => {
+  assert.equal(
+    sanitizeUrlPreview('https://app.example.com/http%3a//127.0.0.1%3a9222/devtools/browser/RAW'),
+    'https://app.example.com/http',
+  );
+});

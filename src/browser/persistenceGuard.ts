@@ -147,7 +147,9 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     // (`%3B`=`;`, `%26`=`&`, `%3F`=`?`, `%23`=`#`) a server decodes before reading: they live
     // in `pathname`, not `search`, so a `;jsessionid=`/`%3Fcode=` redirect URL would
     // otherwise persist a live session id or auth code in a checkpoint preview.
-    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23/i)[0];
+    // `%3a` included: an encoded colon in an ABSOLUTE path re-opens the smuggle once a
+    // consumer decodes it (`https://app.example.com/http%3a//127.0.0.1%3a9222/...`).
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23|%3a/i)[0];
     return parsed.toString();
   } catch {
     // Not an absolute URL. Keep ONLY a clean relative path (single leading slash,

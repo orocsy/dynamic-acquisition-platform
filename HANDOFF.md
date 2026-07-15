@@ -25,8 +25,12 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   allowed a literal colon), the method check became a FIXED allow-list (GET/HEAD/
   POST/PUT/DELETE/PATCH/OPTIONS/TRACE/CONNECT, case-insensitive — an all-letter
   `SecretToken` no longer passes), and the camel-boundary denylist view also splits
-  acronym→Word boundaries (`clientSECRETValue`, `run_CSRFDefense`). Tests: 242
-  pass / 0 fail. Awaiting next codex round; merge at zero findings, then Phase 3.5.
+  acronym→Word boundaries (`clientSECRETValue`, `run_CSRFDefense`). Round 8
+  (2026-07-15, 4 P2) closed the `%3A` gap in the ABSOLUTE try-branches (header
+  sanitizer + `sanitizeUrlPreview` pathname splits), added an encoded-scheme
+  alternative to the diagnostics risky-pattern (`http%3a//…`), and bounded the
+  method length before uppercasing. Tests: 246 pass / 0 fail. Awaiting next codex
+  round; merge at zero findings, then Phase 3.5.
 - **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
   a structural + credential-keyword denylist; a keyword-free random secret used AS
   an id is indistinguishable from a legit opaque id. If codex re-flags this, the

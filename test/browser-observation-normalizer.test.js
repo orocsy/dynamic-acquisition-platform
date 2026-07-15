@@ -130,9 +130,51 @@ test('mapper validates field types before forwarding', () => {
   assert.equal(JSON.stringify(e3).includes('SECRETMIME'), false);
   const e4 = mapBrowserObservationToNetworkEntry(obs({ response: { status: 204, mimeType: 'text/html; charset=utf-8' } }));
   assert.equal(e4.status, 204);
-  assert.equal(e4.mimeType, 'text/html; charset=utf-8');
+  assert.equal(e4.mimeType, 'text/html'); // parameters stripped (free-form, could carry a secret)
   // non-ISO / secret-bearing timestamps omitted
   const e5 = mapBrowserObservationToNetworkEntry(obs({ timing: { startedAt: 'Bearer SECRETTIME' }, capturedAt: 'not-iso' }));
   assert.equal('startedAt' in e5, false);
   assert.equal(JSON.stringify(e5).includes('SECRET'), false);
+});
+
+// Codex re-review of PR #3 (round 5): the flow accepts ANY NetworkCaptureSession, so an
+// observation reaching the mapper may never have passed assertSafeBrowserObservation. The
+// mapper must re-validate every security-relevant field itself (abuse cases first).
+test('mapper strips MIME parameters (a parameter is free-form and can carry a secret)', () => {
+  const e = mapBrowserObservationToNetworkEntry(obs({ response: { mimeType: 'application/json; boundary=sk-live-MIMESECRET' } }));
+  assert.equal(e.mimeType, 'application/json');
+  assert.equal(JSON.stringify(e).includes('MIMESECRET'), false);
+});
+
+test('mapper filters a value-bearing query param name before appending it to the url', () => {
+  const e = mapBrowserObservationToNetworkEntry(
+    obs({ request: { url: 'https://api.example.com/v1/users', method: 'GET', queryParamNames: ['page', 'access_token=QUERYSECRET'] } }),
+  );
+  assert.ok(e.url.includes('page='));
+  assert.equal(JSON.stringify(e).includes('QUERYSECRET'), false);
+  // a non-array names value is a safe no-op, not a crash
+  const e2 = mapBrowserObservationToNetworkEntry(
+    obs({ request: { url: 'https://api.example.com/v1/users', method: 'GET', queryParamNames: 'access_token=QUERYSECRET' } }),
+  );
+  assert.equal(e2.url, 'https://api.example.com/v1/users');
+});
+
+test('mapper skips a free-form method that is not an HTTP method token', () => {
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ request: { url: 'https://h/x', method: 'Bearer sk-live-METHODSECRET' } })), undefined);
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ request: { url: 'https://h/x', method: '' } })), undefined);
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ request: { url: 'https://h/x', method: 'GET/../' } })), undefined);
+});
+
+test('mapper skips a request url that fails the sanitized-url invariant', () => {
+  // raw query (secret value), encoded delimiter, and a loopback CDP endpoint all skip
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ request: { url: 'https://app.example/cb?code=URLSECRET', method: 'GET' } })), undefined);
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ request: { url: 'https://app.example/cb%3Fcode=URLSECRET', method: 'GET' } })), undefined);
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ request: { url: 'http://127.0.0.1:9222/devtools/browser/RAWTARGET', method: 'GET' } })), undefined);
+});
+
+test('mapper skips a credential-like or non-opaque observation id (it becomes evidence source.ref)', () => {
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ id: 'access_token_abc123' })), undefined);
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ id: 'ws://127.0.0.1:9222/devtools' })), undefined);
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ id: 'a:b' })), undefined);
+  assert.equal(mapBrowserObservationToNetworkEntry(obs({ id: ['sk_live_x'] })), undefined);
 });

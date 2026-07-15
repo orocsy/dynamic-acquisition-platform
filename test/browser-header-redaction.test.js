@@ -423,9 +423,17 @@ test('invariant rejects a non-array queryParamNames and a non-opaque observation
     assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque/, id);
   // a non-string id (malformed daemon JSON) is rejected, not String()-coerced
   for (const id of [['sk_live_SECRET'], 42, null, true])
-    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque string token/, JSON.stringify(id));
-  // a descriptive opaque id (even one containing a marker WORD) is accepted
-  assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'obs-123_token_req' }));
+    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque, credential-free string token/, JSON.stringify(id));
+  // Codex re-review of PR #3 (round 5): unlike a daemonId/runId ref PART (structural-only,
+  // round 10 -- it only ever lands inside the redacted transparent ref), an observation id is
+  // persisted STANDALONE as evidence source.ref + diagnostics entryId, so it follows the
+  // surrogate-session-id rule: a separator-delimited credential MARKER is rejected too.
+  for (const id of ['obs-123_token_req', 'access_token_abc123'])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque, credential-free string token/, id);
+  // a descriptive keyword-free opaque id is accepted (marker word only as a PREFIX of a longer
+  // word stays accepted, per the merged-keyword rule: `tokenizer` is not `token`)
+  assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'obs-123-req-7' }));
+  assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'obs-tokenizer-eval' }));
 });
 
 // Codex re-review of PR #3 (#3): a non-string request.method would crash the normalizer's

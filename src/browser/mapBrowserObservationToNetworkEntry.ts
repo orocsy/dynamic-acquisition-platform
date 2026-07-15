@@ -1,4 +1,6 @@
 import type { BrowserObservation, BrowserObservationSource } from './browserObservation';
+import { isSafeQueryParamName, isSanitizedUrlField } from './browserObservation';
+import { isOpaqueBrowserRef, isSafeBrowserRefPart } from './browserRef';
 import type { NetworkEntrySource, RawNetworkEntry } from '../discovery/network/types';
 
 /**
@@ -22,9 +24,14 @@ const SOURCE_MAP: Record<BrowserObservationSource, NetworkEntrySource> = {
   'daemon-fixture': 'fixture',
 };
 
-function withQueryParamNames(url: string, names: readonly string[] | undefined): string {
-  if (!names || names.length === 0) return url;
-  const query = names.map((name) => `${encodeURIComponent(name)}=`).join('&');
+function withQueryParamNames(url: string, names: readonly unknown[] | undefined): string {
+  if (!Array.isArray(names) || names.length === 0) return url;
+  // Re-validate each NAME as value-less HERE too: the flow accepts any session, so a
+  // source-controlled name must not smuggle a value (`access_token=SECRET`) that
+  // `URLSearchParams` would later split back out into the normalizer's queryParamNames.
+  const safe = names.filter(isSafeQueryParamName);
+  if (safe.length === 0) return url;
+  const query = safe.map((name) => `${encodeURIComponent(name)}=`).join('&');
   return url.includes('?') ? `${url}&${query}` : `${url}?${query}`;
 }
 
@@ -54,12 +61,18 @@ function filterEvidenceHeaders(headers: Record<string, unknown> | undefined): Re
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// A constrained MIME type (`type/subtype` + optional params), not a secret-bearing free-form
-// string; bounded so a huge value can't ride into evidence.
-const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}(?:\s*;[ -~]{0,128})?$/i;
-function isCleanMimeType(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= 256 && MIME_TYPE_PATTERN.test(value);
+// The base `type/subtype` of a MIME type, with any parameters (`; charset=...`) STRIPPED: a
+// parameter is free-form and could carry a secret, so only the bounded base reaches evidence.
+const MIME_TYPE_BASE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/i;
+function cleanMimeType(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 256) return undefined;
+  const base = value.split(';', 1)[0].trim();
+  return MIME_TYPE_BASE_PATTERN.test(base) ? base : undefined;
 }
+
+// A valid HTTP method token (letters only, bounded) -- not free-form text that could carry
+// credential data into evidence (and crash the normalizer's `.toUpperCase()`).
+const HTTP_METHOD_PATTERN = /^[A-Za-z]{1,16}$/;
 
 // Accept only an ISO-8601 timestamp; a non-ISO / secret-bearing string is rejected so it can't
 // ride into evidence as `timestamp`.
@@ -70,15 +83,21 @@ function isoTimestamp(value: unknown): string | undefined {
 
 export function mapBrowserObservationToNetworkEntry(observation: BrowserObservation): RawNetworkEntry | undefined {
   const request = observation.request;
-  // A url-less observation, or one whose url/method is not a non-empty string (malformed
-  // daemon JSON), is unmappable -> undefined (a safe skip), never forwarded: a non-string
-  // method would crash the normalizer's `.toUpperCase()` and abort the whole capture flow.
+  // The flow accepts ANY NetworkCaptureSession, so an observation reaching the mapper may NOT
+  // have passed assertSafeBrowserObservation. Re-validate every security-relevant field here;
+  // anything malformed/unsafe -> undefined (a safe skip), never forwarded into evidence:
+  //  - url: re-apply the sanitized-URL invariant (no query/encoded-delimiter/endpoint secrets)
+  //  - method: a valid HTTP method token only (free-form text could carry creds + crash .toUpperCase())
+  //  - id: an opaque, credential-free token (it becomes evidence `source.ref`/`entryId`)
   if (
     !request ||
     typeof request.url !== 'string' ||
-    request.url.length === 0 ||
+    !isSanitizedUrlField(request.url) ||
     typeof request.method !== 'string' ||
-    request.method.length === 0
+    !HTTP_METHOD_PATTERN.test(request.method) ||
+    typeof observation.id !== 'string' ||
+    !isSafeBrowserRefPart(observation.id) ||
+    !isOpaqueBrowserRef(observation.id)
   ) {
     return undefined;
   }
@@ -90,7 +109,7 @@ export function mapBrowserObservationToNetworkEntry(observation: BrowserObservat
   }
 
   const entry: RawNetworkEntry = {
-    id: String(observation.id),
+    id: observation.id,
     url: withQueryParamNames(request.url, request.queryParamNames),
     method: request.method,
     source,
@@ -107,7 +126,8 @@ export function mapBrowserObservationToNetworkEntry(observation: BrowserObservat
     // Only a numeric status / constrained MIME type reach evidence: a string status would
     // mislabel, and a free-form mimeType could carry a secret.
     if (typeof response.status === 'number' && Number.isInteger(response.status)) entry.status = response.status;
-    if (isCleanMimeType(response.mimeType)) entry.mimeType = response.mimeType;
+    const mimeType = cleanMimeType(response.mimeType);
+    if (mimeType) entry.mimeType = mimeType;
   }
 
   // Forward only an ISO-8601 timestamp (entry.startedAt is optional); omit a non-ISO /

@@ -158,3 +158,30 @@ test('returned evidence carries the scoped evidenceId that equals its ref', asyn
     assert.ok(result.evidenceRefs.includes(ev.evidenceId)); // ref == emitted evidence id
   }
 });
+
+// Codex re-review of PR #3 (round 5): the session is UNTRUSTED, so a token-shaped diagnostic
+// code (e.g. `sk-live-...`, which satisfies a loose [a-z0-9-] regex) must be collapsed to the
+// fixed allow-list rather than persisted verbatim under `browser-capture.*`.
+test('flow collapses an unknown capture diagnostic code from an untrusted session', async () => {
+  const session = {
+    start: async () => {},
+    stop: async () => ({
+      observations: [],
+      diagnostics: [
+        { level: 'warning', code: 'sk-live-DIAGSECRET123', index: 0 },
+        { level: 'warning', code: 'unsafe-observation-skipped', index: 1 },
+      ],
+    }),
+    listObservations: async () => [],
+  };
+  const coordinator = fakeCoordinator();
+  const result = await runBrowserNetworkCaptureFlow(
+    { session, coordinator },
+    { runId: 'run_1', pageTargetRef: 'page:t-1', expectedVersion: 1 },
+  );
+  const codes = result.diagnostics.map((d) => d.code);
+  assert.ok(codes.includes('browser-capture.diagnostic')); // unknown code collapsed
+  assert.ok(codes.includes('browser-capture.unsafe-observation-skipped')); // known code kept
+  assert.equal(JSON.stringify(result.diagnostics).includes('DIAGSECRET'), false);
+  assert.equal(JSON.stringify(coordinator.calls).includes('DIAGSECRET'), false);
+});

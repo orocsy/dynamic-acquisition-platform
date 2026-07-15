@@ -1,7 +1,37 @@
-# Handoff — Phase 3.3 complete (hardening + codex + adversarial review applied), ready for 3.4
+# Handoff — Phase 3.4 implemented (PR #3), codex loop in progress
 
 Snapshot for picking this up in a fresh session (e.g. Claude Code). Read this
 first, then `docs/phase3-low-level-design.md` for the slice you're building.
+
+## 2026-07-14 update (supersedes "Current state" below where they conflict)
+
+- **Phase 3.4 (network capture → evidence bridge) is IMPLEMENTED** on branch
+  `phase3.4-network-evidence` (PR #3). Codex re-review rounds 1–4 were fixed and
+  pushed on 2026-06-09. Round 5 (2026-06-19, 7 P1 bridge findings: credential-like
+  observation ids, MIME params, query-name recheck, method token, URL re-validation
+  in the mapper, non-string header previews in the session, diagnostic-code
+  allow-list in the flow) is fixed, regression-tested (+8 tests), and pushed
+  2026-07-14. Tests: 234 pass / 0 fail. Awaiting next codex round; merge at zero
+  findings, then Phase 3.5.
+- **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
+  a structural + credential-keyword denylist; a keyword-free random secret used AS
+  an id is indistinguishable from a legit opaque id. If codex re-flags this, the
+  by-construction fix is session-side id minting (mirror `mintPageTargetRef`).
+- **Observation ids follow the surrogate-session-id rule, not the ref-part rule:**
+  they persist standalone (evidence `source.ref`, diagnostics `entryId`), so a
+  separator-delimited credential marker (`obs-123_token_req`) is rejected even
+  though round 10 keeps such markers legal in daemonId/runId ref parts.
+- **⚠️ Local FS hazard (this machine):** the Desktop working copy sits on a
+  cloud-evicting filesystem; with the disk at ~98% macOS made hundreds of files
+  (incl. `.git/`, `node_modules/`, most `test/*.js`, `package-lock.json`)
+  **dataless**, and rematerialization hangs. Symptoms: `git status`/`log`/`diff`
+  and `tsc` hang forever, and a session-start "clean" git status was FALSE (the
+  round-5 fixes sat uncommitted for weeks). Workaround that works: clone fresh
+  from GitHub into a local-disk path, overlay the readable (= materialized =
+  possibly-modified) files, build/test/commit/push there. A dataless file cannot
+  hold local modifications, so its content is always recoverable from origin.
+  Fix the root cause by freeing disk space, then let the Desktop repo
+  `git fetch && git reset --keep origin/phase3.4-network-evidence`.
 
 ## What this project is
 

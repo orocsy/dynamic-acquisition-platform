@@ -47,6 +47,16 @@ export class NotImplementedNetworkObservationSource implements NetworkObservatio
  * that would otherwise survive `stop()`/`listObservations()` and reach the normalizer. Run
  * this AFTER `assertSafeBrowserObservation`, on an already-validated observation.
  */
+function pickStringHeaders(headers: Record<string, unknown>): Record<string, string> {
+  // Copy only STRING header values: a non-string JSON value (a nested object with a secret)
+  // must not survive into stored/returned observations via stop()/listObservations().
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (typeof value === 'string') out[name] = value;
+  }
+  return out;
+}
+
 function pickSafeObservation(observation: BrowserObservation): BrowserObservation {
   const safe: BrowserObservation = {
     id: observation.id,
@@ -58,7 +68,7 @@ function pickSafeObservation(observation: BrowserObservation): BrowserObservatio
   if (observation.request) {
     const request = observation.request;
     safe.request = { url: request.url, method: request.method };
-    if (request.headersPreview) safe.request.headersPreview = { ...request.headersPreview };
+    if (request.headersPreview) safe.request.headersPreview = pickStringHeaders(request.headersPreview);
     if (request.resourceType !== undefined) safe.request.resourceType = request.resourceType;
     if (request.bodyShape !== undefined) safe.request.bodyShape = request.bodyShape;
     if (Array.isArray(request.queryParamNames)) safe.request.queryParamNames = [...request.queryParamNames];
@@ -68,7 +78,7 @@ function pickSafeObservation(observation: BrowserObservation): BrowserObservatio
     safe.response = {};
     if (response.status !== undefined) safe.response.status = response.status;
     if (response.mimeType !== undefined) safe.response.mimeType = response.mimeType;
-    if (response.headersPreview) safe.response.headersPreview = { ...response.headersPreview };
+    if (response.headersPreview) safe.response.headersPreview = pickStringHeaders(response.headersPreview);
     if (response.bodyShape !== undefined) safe.response.bodyShape = response.bodyShape;
   }
   if (observation.timing) {

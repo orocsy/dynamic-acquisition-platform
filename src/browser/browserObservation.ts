@@ -1,5 +1,5 @@
 import type { BrowserObservationId, PageTargetRef } from './types';
-import { isPageTargetRef, isSafeBrowserRefPart } from './browserRef';
+import { isOpaqueBrowserRef, isPageTargetRef, isSafeBrowserRefPart } from './browserRef';
 import { isLoopbackHost } from './daemonClient';
 
 export type BrowserObservationSource = 'cdp' | 'playwright' | 'daemon-fixture';
@@ -58,7 +58,7 @@ const SENSITIVE_HEADER_PATTERN = /(?:authorization|cookie|set-cookie|api[-_]?key
 // invariant so both enforce one policy.
 const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@/?#;&\s\x5c\x00-\x1f]+(?:\/[^?#;&\s\x5c\x00-\x1f]*)?$/i;
 const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
-function isSanitizedUrlField(value: string): boolean {
+export function isSanitizedUrlField(value: string): boolean {
   // Reject any percent-encoded query/fragment/param delimiter (`%3B`/`%26`/`%3F`/`%23`) a
   // consumer would decode into a secret.
   if (/%(?:3[bf]|26|23)/i.test(value)) return false;
@@ -242,6 +242,12 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
 
 const CLEAN_QUERY_PARAM_NAME = /^[^\s%=&?#/\\\p{Cc}]+$/u;
 
+// A single value-less query param NAME token (exported so the bridge can re-validate
+// source-controlled names from an untrusted session before forwarding them to evidence).
+export function isSafeQueryParamName(name: unknown): name is string {
+  return typeof name === 'string' && name.length > 0 && name.length <= 256 && CLEAN_QUERY_PARAM_NAME.test(name);
+}
+
 function assertQueryParamNamesSafe(names: unknown): void {
   if (names === undefined) return;
   // Must be an ARRAY of clean, value-LESS name tokens. A non-array (e.g. a bare string from
@@ -253,7 +259,7 @@ function assertQueryParamNamesSafe(names: unknown): void {
     throw new Error('browser observation request.queryParamNames must be an array of clean value-less name tokens');
   }
   for (const name of names) {
-    if (typeof name !== 'string' || name.length === 0 || name.length > 256 || !CLEAN_QUERY_PARAM_NAME.test(name)) {
+    if (!isSafeQueryParamName(name)) {
       throw new Error('browser observation request.queryParamNames must be clean value-less name tokens');
     }
   }
@@ -266,8 +272,8 @@ export function assertSafeBrowserObservation(observation: BrowserObservation): v
   // secret a buggy source might supply. Require an actual string (not String()-coerced): a
   // non-string id (e.g. `["sk_live_..."]`) would pass a coerced check yet be stored/returned
   // verbatim by pickSafeObservation. Structural-only (descriptive ids OK).
-  if (typeof observation.id !== 'string' || !isSafeBrowserRefPart(observation.id)) {
-    throw new Error('browser observation id must be an opaque string token (no URL/path/scheme/colon/whitespace)');
+  if (typeof observation.id !== 'string' || !isSafeBrowserRefPart(observation.id) || !isOpaqueBrowserRef(observation.id)) {
+    throw new Error('browser observation id must be an opaque, credential-free string token');
   }
   // request.url and pageTargetRef are persisted alongside the header previews, so the
   // invariant must validate them too: a prebuilt observation must not carry a raw

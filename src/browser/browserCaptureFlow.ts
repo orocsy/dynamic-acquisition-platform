@@ -69,6 +69,11 @@ function captureDiagnosticLevel(level: unknown): RuntimeDiagnosticLevel {
   return level === 'error' || level === 'info' ? level : 'warning';
 }
 
+// The capture-diagnostic codes the bridge will persist verbatim. The session is UNTRUSTED, so
+// an unrecognized code (even one that looks token-shaped, e.g. `sk-live-SECRET`) is collapsed
+// to `diagnostic` rather than regex-sanitized and written through.
+const KNOWN_CAPTURE_CODES = new Set<unknown>(['unsafe-observation-skipped', 'observation-window-mismatch-skipped']);
+
 function mergeEvidenceRefs(prior: readonly string[] | undefined, next: readonly string[]): string[] {
   const merged = [...(prior ?? [])];
   for (const ref of next) {
@@ -114,7 +119,7 @@ export async function runBrowserNetworkCaptureFlow(
     // The session is UNTRUSTED (the flow accepts any NetworkCaptureSession): carry only a
     // sanitized code + a numeric index. Never copy a source-controlled `reason`/`observationId`/
     // header name into the persisted runtime diagnostics.
-    code: `browser-capture.${typeof diagnostic.code === 'string' && /^[a-z0-9-]+$/i.test(diagnostic.code) ? diagnostic.code : 'diagnostic'}`,
+    code: `browser-capture.${KNOWN_CAPTURE_CODES.has(diagnostic.code) ? (diagnostic.code as string) : 'diagnostic'}`,
     message: 'Browser network capture diagnostic',
     ...(input.now ? { at: input.now } : {}),
     ...(typeof diagnostic.index === 'number' && Number.isInteger(diagnostic.index) ? { data: { index: diagnostic.index } } : {}),

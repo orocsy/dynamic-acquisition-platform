@@ -125,3 +125,19 @@ test('session skips a same-run observation missing pageTargetRef', async () => {
   assert.deepEqual(result.observations.map((o) => o.id), ['ok']);
   assert.equal(result.diagnostics.filter((d) => d.code === 'observation-window-mismatch-skipped').length, 1);
 });
+
+// Codex re-review of PR #3 (round 5): an allowlisted header NAME with a non-string JSON value
+// passes the invariant (which string-tests values), so the session copy must keep only STRING
+// preview values -- a nested object with a secret must never survive stop()/listObservations().
+test('session stores only string header preview values (nested object dropped)', async () => {
+  const withObjectHeader = {
+    ...safeObs('h1'),
+    response: { status: 200, headersPreview: { 'content-type': { raw: 'Bearer HEADERSECRET' } } },
+  };
+  const session = new BrowserNetworkCaptureSession(fakeSource([withObjectHeader]));
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(result.observations.length, 1);
+  assert.equal(JSON.stringify(result).includes('HEADERSECRET'), false);
+  assert.equal(JSON.stringify(await session.listObservations('run_1')).includes('HEADERSECRET'), false);
+});

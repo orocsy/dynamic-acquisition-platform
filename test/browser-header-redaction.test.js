@@ -436,11 +436,34 @@ test('invariant rejects a non-array queryParamNames and a non-opaque observation
   assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'obs-tokenizer-eval' }));
 });
 
-// Codex re-review of PR #3 (#3): a non-string request.method would crash the normalizer's
-// .toUpperCase() and abort the whole capture flow -- reject it at the gate.
-test('invariant rejects a non-string or empty request.method', () => {
+// Codex re-review of PR #3 (#3, round 6): a non-string request.method would crash the
+// normalizer's .toUpperCase(), and a free-form method STRING would be copied verbatim into
+// stored/returned observations by pickSafeObservation -- so the gate requires a real HTTP
+// method token, not merely a non-empty string.
+test('invariant rejects a non-token request.method', () => {
   const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't' };
-  for (const method of [42, null, '', true, ['GET']])
-    assert.throws(() => assertSafeBrowserObservation({ ...base, request: { url: 'https://api.example.com/x', method } }), /method must be a non-empty string/, JSON.stringify(method));
+  for (const method of [42, null, '', true, ['GET'], 'Bearer sk-live-METHODSECRET', 'GET/../'])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, request: { url: 'https://api.example.com/x', method } }), /method must be a valid HTTP method token/, JSON.stringify(method));
   assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, request: { url: 'https://api.example.com/x', method: 'POST' } }));
+});
+
+// Codex re-review of PR #3 (round 6): a colon in a relative path lets a whole absolute URL
+// hide inside it (`/http://127.0.0.1:9222/...`), bypassing the loopback/scheme rejection by
+// prefixing `/` -- the relative allow-list must exclude `:`.
+test('invariant rejects a relative request.url smuggling an absolute/loopback endpoint', () => {
+  const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't' };
+  for (const url of ['/http://127.0.0.1:9222/devtools/browser/RAWSECRET', '/ws://127.0.0.1:9222/x', '/a:b'])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, request: { url, method: 'GET' } }), /request.url/, url);
+  assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, request: { url: '/api/v2/users', method: 'GET' } }));
+});
+
+// Codex re-review of PR #3 (round 6): camelCase credential markers (`accessToken_abc123`)
+// defeated the alnum-bounded keyword test (the preceding lowercase letter satisfied the
+// lookbehind), so the denylist also tests a camel-boundary-split view.
+test('invariant rejects camelCase credential-marker observation ids', () => {
+  const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://api.example.com/x', method: 'GET' } };
+  for (const id of ['accessToken_abc123', 'refreshToken_abc123', 'clientSecret', 'sessionApiKey'])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque, credential-free string token/, id);
+  // keyword-as-prefix stays accepted after the camel split too (`tokenizer` is not `token`)
+  assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'myTokenizerRun' }));
 });

@@ -1,5 +1,5 @@
 import type { BrowserObservation, BrowserObservationSource } from './browserObservation';
-import { isSafeQueryParamName, isSanitizedUrlField } from './browserObservation';
+import { cleanMimeType, isHttpMethodToken, isSafeQueryParamName, isSanitizedUrlField } from './browserObservation';
 import { isOpaqueBrowserRef, isSafeBrowserRefPart } from './browserRef';
 import type { NetworkEntrySource, RawNetworkEntry } from '../discovery/network/types';
 
@@ -61,18 +61,9 @@ function filterEvidenceHeaders(headers: Record<string, unknown> | undefined): Re
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// The base `type/subtype` of a MIME type, with any parameters (`; charset=...`) STRIPPED: a
-// parameter is free-form and could carry a secret, so only the bounded base reaches evidence.
-const MIME_TYPE_BASE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/i;
-function cleanMimeType(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.length > 256) return undefined;
-  const base = value.split(';', 1)[0].trim();
-  return MIME_TYPE_BASE_PATTERN.test(base) ? base : undefined;
-}
-
-// A valid HTTP method token (letters only, bounded) -- not free-form text that could carry
-// credential data into evidence (and crash the normalizer's `.toUpperCase()`).
-const HTTP_METHOD_PATTERN = /^[A-Za-z]{1,16}$/;
+// MIME cleanup + HTTP-method token checks are shared with the observation gate/session store
+// (browserObservation.ts) so the mapper and the session cannot drift apart -- the round-6
+// review found exactly that asymmetry (mapper hardened, session path copying verbatim).
 
 // Accept only an ISO-8601 timestamp; a non-ISO / secret-bearing string is rejected so it can't
 // ride into evidence as `timestamp`.
@@ -93,8 +84,7 @@ export function mapBrowserObservationToNetworkEntry(observation: BrowserObservat
     !request ||
     typeof request.url !== 'string' ||
     !isSanitizedUrlField(request.url) ||
-    typeof request.method !== 'string' ||
-    !HTTP_METHOD_PATTERN.test(request.method) ||
+    !isHttpMethodToken(request.method) ||
     typeof observation.id !== 'string' ||
     !isSafeBrowserRefPart(observation.id) ||
     !isOpaqueBrowserRef(observation.id)

@@ -11,8 +11,16 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   observation ids, MIME params, query-name recheck, method token, URL re-validation
   in the mapper, non-string header previews in the session, diagnostic-code
   allow-list in the flow) is fixed, regression-tested (+8 tests), and pushed
-  2026-07-14. Tests: 234 pass / 0 fail. Awaiting next codex round; merge at zero
-  findings, then Phase 3.5.
+  2026-07-14. Round 6 (2026-07-15, 4 P2 findings — converging 7→4, P1→P2) fixed the
+  mapper-vs-session asymmetry (method token + MIME base now enforced at the GATE /
+  session store via shared helpers in `browserObservation.ts`, so
+  `stop()`/`listObservations()` can't return what the mapper would drop), excluded
+  `:` from the relative-path allow-list (`/http://127.0.0.1:9222/…` smuggling), and
+  added a camel-boundary view to the credential-keyword denylist
+  (`accessToken_abc123`; NOTE: `run_csrfDefense`-style camel-glued markers are now
+  rejected at the `isOpaqueBrowserRef` level — ref PARTS stay structural-only, so
+  run/daemon ids are unaffected). Tests: 238 pass / 0 fail. Awaiting next codex
+  round; merge at zero findings, then Phase 3.5.
 - **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
   a structural + credential-keyword denylist; a keyword-free random secret used AS
   an id is indistinguishable from a legit opaque id. If codex re-flags this, the

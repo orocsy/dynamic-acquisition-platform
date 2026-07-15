@@ -57,7 +57,11 @@ const SENSITIVE_HEADER_PATTERN = /(?:authorization|cookie|set-cookie|api[-_]?key
 // `new URL` resolves via `\\`==`/`). Shared by the header check and the request.url
 // invariant so both enforce one policy.
 const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@/?#;&\s\x5c\x00-\x1f]+(?:\/[^?#;&\s\x5c\x00-\x1f]*)?$/i;
-const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
+// No `:` (0x3a) in a relative path: a colon lets a whole absolute URL hide inside it
+// (`/http://127.0.0.1:9222/devtools/...`), smuggling a scheme/port/loopback endpoint past
+// the absolute-URL checks by prefixing `/`. Rare legit colon segments (`/v1/users:batch`)
+// are dropped as the cost of closing the class.
+const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x39\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
 export function isSanitizedUrlField(value: string): boolean {
   // Reject any percent-encoded query/fragment/param delimiter (`%3B`/`%26`/`%3F`/`%23`) a
   // consumer would decode into a secret.
@@ -240,6 +244,25 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
   }
 }
 
+// A valid HTTP method token (letters only, bounded) -- not free-form text that could carry
+// credential data. Shared by the observation gate (so an unsafe method never survives
+// stop()/listObservations()) and the mapper (defense for observations that bypassed the gate).
+const HTTP_METHOD_TOKEN = /^[A-Za-z]{1,16}$/;
+export function isHttpMethodToken(value: unknown): value is string {
+  return typeof value === 'string' && HTTP_METHOD_TOKEN.test(value);
+}
+
+// The base `type/subtype` of a MIME type, with any parameters (`; charset=...`) STRIPPED: a
+// parameter is free-form and could carry a secret. SANITIZE disposal (lossy preview), not
+// REJECT: the base is informational, so dropping the parameters is fine. Shared by the
+// session store (construction) and the mapper (defense for un-gated observations).
+const MIME_TYPE_BASE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/i;
+export function cleanMimeType(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 256) return undefined;
+  const base = value.split(';', 1)[0].trim();
+  return MIME_TYPE_BASE_PATTERN.test(base) ? base : undefined;
+}
+
 const CLEAN_QUERY_PARAM_NAME = /^[^\s%=&?#/\\\p{Cc}]+$/u;
 
 // A single value-less query param NAME token (exported so the bridge can re-validate
@@ -282,9 +305,11 @@ export function assertSafeBrowserObservation(observation: BrowserObservation): v
     throw new Error('browser observation request.url must be a sanitized http(s) URL or relative path');
   }
   // A non-string method (malformed daemon JSON) would crash the normalizer's `.toUpperCase()`
-  // downstream; reject it at the gate so the run isn't aborted by one bad observation.
-  if (observation.request !== undefined && (typeof observation.request.method !== 'string' || observation.request.method.length === 0)) {
-    throw new Error('browser observation request.method must be a non-empty string');
+  // downstream, and a free-form method string could carry credential text into
+  // stop()/listObservations() results (pickSafeObservation copies it verbatim) -- so the gate
+  // requires a real HTTP method TOKEN, not merely a non-empty string.
+  if (observation.request !== undefined && !isHttpMethodToken(observation.request.method)) {
+    throw new Error('browser observation request.method must be a valid HTTP method token');
   }
   assertQueryParamNamesSafe(observation.request?.queryParamNames);
   if (observation.pageTargetRef !== undefined && !isPageTargetRef(observation.pageTargetRef)) {

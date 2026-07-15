@@ -1,5 +1,5 @@
 import type { BrowserObservation } from './browserObservation';
-import { assertSafeBrowserObservation } from './browserObservation';
+import { assertSafeBrowserObservation, cleanMimeType } from './browserObservation';
 import type { PageTargetRef } from './types';
 
 export type StartNetworkCaptureInput = {
@@ -77,7 +77,11 @@ function pickSafeObservation(observation: BrowserObservation): BrowserObservatio
     const response = observation.response;
     safe.response = {};
     if (response.status !== undefined) safe.response.status = response.status;
-    if (response.mimeType !== undefined) safe.response.mimeType = response.mimeType;
+    // SANITIZE, not copy: the gate has no MIME check (a parameter is not per-se unsafe), so
+    // strip free-form parameters here -- `application/json; boundary=<secret>` must not
+    // survive into stored/returned observations. An invalid base drops the field.
+    const mimeType = cleanMimeType(response.mimeType);
+    if (mimeType !== undefined) safe.response.mimeType = mimeType;
     if (response.headersPreview) safe.response.headersPreview = pickStringHeaders(response.headersPreview);
     if (response.bodyShape !== undefined) safe.response.bodyShape = response.bodyShape;
   }

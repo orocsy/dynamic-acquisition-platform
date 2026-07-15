@@ -141,3 +141,26 @@ test('session stores only string header preview values (nested object dropped)',
   assert.equal(JSON.stringify(result).includes('HEADERSECRET'), false);
   assert.equal(JSON.stringify(await session.listObservations('run_1')).includes('HEADERSECRET'), false);
 });
+
+// Codex re-review of PR #3 (round 6): the mapper-side method/MIME hardening only protected
+// EVIDENCE; the session path returned the raw values through stop()/listObservations().
+test('session gate skips a free-form method observation (never stored or returned)', async () => {
+  const badMethod = { ...safeObs('m1'), request: { url: 'https://api.example.com/x', method: 'Bearer sk-live-METHODSECRET' } };
+  const session = new BrowserNetworkCaptureSession(fakeSource([safeObs('ok'), badMethod]));
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.diagnostics[0].code, 'unsafe-observation-skipped');
+  assert.equal(JSON.stringify(result).includes('METHODSECRET'), false);
+  assert.equal(JSON.stringify(await session.listObservations('run_1')).includes('METHODSECRET'), false);
+});
+
+test('session strips MIME parameters before storing an observation', async () => {
+  const paramMime = { ...safeObs('p1'), response: { status: 200, mimeType: 'application/json; boundary=sk-live-MIMESECRET' } };
+  const session = new BrowserNetworkCaptureSession(fakeSource([paramMime]));
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(result.observations[0].response.mimeType, 'application/json');
+  assert.equal(JSON.stringify(result).includes('MIMESECRET'), false);
+  assert.equal(JSON.stringify(await session.listObservations('run_1')).includes('MIMESECRET'), false);
+});

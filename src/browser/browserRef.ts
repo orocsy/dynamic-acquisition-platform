@@ -22,8 +22,22 @@ function hasStructuralRefUnsafe(value: string, folded: string): boolean {
   return STRUCTURAL_REF_UNSAFE_PATTERN.test(value) || STRUCTURAL_REF_UNSAFE_PATTERN.test(folded);
 }
 
+// Insert a `_` separator at each lower->UPPER camelCase boundary so `accessToken_x` /
+// `sessionApiKey` expose the marker word to the alnum-bounded keyword test (the lookbehind
+// otherwise sees the preceding lowercase letter and skips it). `_` -- not a space -- so
+// multi-part keywords (`api[-_]?key`) still match across the inserted boundary. Applied as
+// an EXTRA view; the raw/folded views still catch everything they caught before.
+function splitCamelBoundaries(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+}
+
 function hasCredentialKeyword(value: string, folded: string): boolean {
-  return CREDENTIAL_KEYWORD_PATTERN.test(value) || CREDENTIAL_KEYWORD_PATTERN.test(folded);
+  return (
+    CREDENTIAL_KEYWORD_PATTERN.test(value) ||
+    CREDENTIAL_KEYWORD_PATTERN.test(folded) ||
+    CREDENTIAL_KEYWORD_PATTERN.test(splitCamelBoundaries(value)) ||
+    CREDENTIAL_KEYWORD_PATTERN.test(splitCamelBoundaries(folded))
+  );
 }
 
 // Forbidden code points in any opaque ref: ALL whitespace (the \s class,

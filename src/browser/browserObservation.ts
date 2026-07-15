@@ -63,9 +63,10 @@ const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@/?#;&\s\x5c\x00-\x1f]+(?:\/[^?#;&\s\x
 // are dropped as the cost of closing the class.
 const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x39\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
 export function isSanitizedUrlField(value: string): boolean {
-  // Reject any percent-encoded query/fragment/param delimiter (`%3B`/`%26`/`%3F`/`%23`) a
-  // consumer would decode into a secret.
-  if (/%(?:3[bf]|26|23)/i.test(value)) return false;
+  // Reject any percent-encoded query/fragment/param/colon delimiter (`%3B`/`%26`/`%3F`/
+  // `%23`/`%3A`) a consumer would decode into a secret -- `%3A` because a decoded colon
+  // re-opens the relative-path scheme smuggle (`/http%3a//127.0.0.1%3a9222/...`).
+  if (/%(?:3[abf]|26|23)/i.test(value)) return false;
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -146,9 +147,10 @@ function sanitizeHeaderUrlValue(value: string): string {
     // Keep ONLY a clean relative path; drop scheme-relative or whitespace/tab/control/
     // zero-width-smuggled host-bearing forms (a URL parser normalizes `/<tab>/host` to
     // `//host`). A relative path has no host:port to leak. See sanitizeUrlPreview.
-    // a relative path with a percent-encoded query/fragment/param delimiter would survive
-    // (CLEAN_RELATIVE_PATH permits `%`) and a consumer would decode it -> redact it.
-    if (/%(?:3[bf]|26|23)/i.test(value)) return REDACTED;
+    // a relative path with a percent-encoded query/fragment/param/colon delimiter would
+    // survive (CLEAN_RELATIVE_PATH permits `%`) and a consumer would decode it -> redact it
+    // (`%3A` re-opens the relative-path scheme smuggle).
+    if (/%(?:3[abf]|26|23)/i.test(value)) return REDACTED;
     const path = value.split(/[?#;&]/, 1)[0];
     return CLEAN_RELATIVE_PATH.test(path) ? path : REDACTED;
   }
@@ -244,12 +246,16 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
   }
 }
 
-// A valid HTTP method token (letters only, bounded) -- not free-form text that could carry
-// credential data. Shared by the observation gate (so an unsafe method never survives
+// A FIXED allow-list of HTTP methods, not a shape check: an all-letter token (`SecretToken`)
+// would satisfy any alphabetic pattern, and the point of this gate is to keep
+// source-controlled free-form text out of persisted observations. Exact known values only
+// (the round-9 ref-key allow-list precedent); extend deliberately if a capture source ever
+// legitimately emits more (e.g. WebDAV). Case-insensitive: CDP reports canonical uppercase,
+// fixtures may not. Shared by the observation gate (so an unsafe method never survives
 // stop()/listObservations()) and the mapper (defense for observations that bypassed the gate).
-const HTTP_METHOD_TOKEN = /^[A-Za-z]{1,16}$/;
+const HTTP_METHOD_ALLOWLIST = new Set(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'TRACE', 'CONNECT']);
 export function isHttpMethodToken(value: unknown): value is string {
-  return typeof value === 'string' && HTTP_METHOD_TOKEN.test(value);
+  return typeof value === 'string' && HTTP_METHOD_ALLOWLIST.has(value.toUpperCase());
 }
 
 // The base `type/subtype` of a MIME type, with any parameters (`; charset=...`) STRIPPED: a

@@ -19,8 +19,14 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   added a camel-boundary view to the credential-keyword denylist
   (`accessToken_abc123`; NOTE: `run_csrfDefense`-style camel-glued markers are now
   rejected at the `isOpaqueBrowserRef` level — ref PARTS stay structural-only, so
-  run/daemon ids are unaffected). Tests: 238 pass / 0 fail. Awaiting next codex
-  round; merge at zero findings, then Phase 3.5.
+  run/daemon ids are unaffected). Round 7 (2026-07-15, 3 P2 — converging 7→4→3)
+  refined round 6: `%3A` added to the encoded-delimiter rejection (all four sites,
+  incl. the UNFLAGGED `persistenceGuard` sibling whose relative pattern also still
+  allowed a literal colon), the method check became a FIXED allow-list (GET/HEAD/
+  POST/PUT/DELETE/PATCH/OPTIONS/TRACE/CONNECT, case-insensitive — an all-letter
+  `SecretToken` no longer passes), and the camel-boundary denylist view also splits
+  acronym→Word boundaries (`clientSECRETValue`, `run_CSRFDefense`). Tests: 242
+  pass / 0 fail. Awaiting next codex round; merge at zero findings, then Phase 3.5.
 - **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
   a structural + credential-keyword denylist; a keyword-free random secret used AS
   an id is indistinguishable from a legit opaque id. If codex re-flags this, the

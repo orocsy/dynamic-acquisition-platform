@@ -349,3 +349,13 @@ test('sanitizeUrlPreview drops trailing-dot and *.localhost loopback CDP endpoin
   assert.notEqual(sanitizeUrlPreview('https://api.example.com./json/version'), undefined);
   assert.equal(sanitizeUrlPreview('https://localhost.evil.com/json/version'), 'https://localhost.evil.com/json/version');
 });
+
+// Codex re-review of PR #3 (round 7): a literal OR percent-encoded colon in a relative
+// preview lets an absolute URL hide behind a leading slash (`/http://…`, `/http%3a//…`),
+// smuggling a scheme/port/loopback endpoint past the absolute-URL checks.
+test('sanitizeUrlPreview drops colon-smuggled relative previews', () => {
+  assert.equal(sanitizeUrlPreview('/http://127.0.0.1:9222/devtools/browser/RAW'), undefined);
+  assert.equal(sanitizeUrlPreview('/http%3a//127.0.0.1%3a9222/devtools/browser/RAW'), undefined);
+  assert.equal(sanitizeUrlPreview('/a:b'), undefined);
+  assert.equal(sanitizeUrlPreview('/api/v2/users'), '/api/v2/users'); // clean path still kept
+});

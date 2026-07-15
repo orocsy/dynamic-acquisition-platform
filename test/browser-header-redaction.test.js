@@ -467,3 +467,24 @@ test('invariant rejects camelCase credential-marker observation ids', () => {
   // keyword-as-prefix stays accepted after the camel split too (`tokenizer` is not `token`)
   assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, id: 'myTokenizerRun' }));
 });
+
+// Codex re-review of PR #3 (round 7): three refinements of the round-6 fixes.
+test('invariant rejects a percent-encoded colon smuggle in a relative request.url', () => {
+  const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't' };
+  for (const url of ['/http%3a//127.0.0.1%3a9222/devtools/browser/RAW', '/cb%3Acode', '/x%3A80/y'])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, request: { url, method: 'GET' } }), /request.url/, url);
+});
+
+test('invariant accepts only allow-listed HTTP methods (an all-letter token is not enough)', () => {
+  const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't' };
+  for (const method of ['SecretToken', 'BEARER', 'FETCH'])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, request: { url: 'https://api.example.com/x', method } }), /method must be a valid HTTP method token/, method);
+  for (const method of ['delete', 'OPTIONS', 'Patch'])
+    assert.doesNotThrow(() => assertSafeBrowserObservation({ ...base, request: { url: 'https://api.example.com/x', method } }), method);
+});
+
+test('invariant rejects acronym-camel credential-marker observation ids', () => {
+  const base = { id: 'obs-1', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://api.example.com/x', method: 'GET' } };
+  for (const id of ['clientSECRETValue', 'sessionAPIKEYValue', 'run_CSRFDefense'])
+    assert.throws(() => assertSafeBrowserObservation({ ...base, id }), /id must be an opaque, credential-free string token/, id);
+});

@@ -22,13 +22,15 @@ function hasStructuralRefUnsafe(value: string, folded: string): boolean {
   return STRUCTURAL_REF_UNSAFE_PATTERN.test(value) || STRUCTURAL_REF_UNSAFE_PATTERN.test(folded);
 }
 
-// Insert a `_` separator at each lower->UPPER camelCase boundary so `accessToken_x` /
-// `sessionApiKey` expose the marker word to the alnum-bounded keyword test (the lookbehind
-// otherwise sees the preceding lowercase letter and skips it). `_` -- not a space -- so
-// multi-part keywords (`api[-_]?key`) still match across the inserted boundary. Applied as
-// an EXTRA view; the raw/folded views still catch everything they caught before.
+// Insert a `_` separator at each camelCase boundary -- BOTH lower->UPPER (`accessToken_x`,
+// `sessionApiKey`) AND acronym->Word (`clientSECRETValue` -> `client_SECRET_Value`,
+// `run_CSRFDefense` -> `run_CSRF_Defense`) -- so the marker word is exposed to the
+// alnum-bounded keyword test (the case-insensitive lookarounds otherwise treat the glued
+// neighbor as part of one longer word). `_` -- not a space -- so multi-part keywords
+// (`api[-_]?key`) still match across the inserted boundary. Applied as an EXTRA view; the
+// raw/folded views still catch everything they caught before.
 function splitCamelBoundaries(value: string): string {
-  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/([A-Z])([A-Z][a-z])/g, '$1_$2');
 }
 
 function hasCredentialKeyword(value: string, folded: string): boolean {

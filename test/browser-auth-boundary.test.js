@@ -129,3 +129,37 @@ test('login-form signal carries no page-text fragment', () => {
   assert.equal(result.signal.kind, 'login-required');
   assert.equal(JSON.stringify(result).includes('SECRET'), false);
 });
+
+// Codex re-review of PR #4 round 2 (D2): a multi-megabyte URL must not be parsed/returned/
+// scanned -- it is dropped before sanitize, in BOTH the nav and observation paths.
+test('detector bounds oversized nav and observation URLs before sanitizing', () => {
+  const hugePath = 'https://app.example.com/login/' + 'a'.repeat(5_000_000);
+  const started = Date.now();
+  const navResult = detector.detect({ navigation: nav({ status: 401, finalUrlPreview: hugePath }) });
+  assert.ok(Date.now() - started < 1_000, 'URL handling must be bounded');
+  assert.equal(navResult.signal.kind, 'login-required'); // status rule still fires
+  assert.equal(navResult.signal.urlPreview, undefined); // oversized preview dropped
+  assert.equal(JSON.stringify(navResult).length < 10_000, true);
+
+  const obsResult = detector.detect({
+    observations: [{ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: hugePath, method: 'GET' }, response: { status: 403 } }],
+  });
+  assert.equal(obsResult.signal.urlPreview, undefined);
+});
+
+// Codex re-review of PR #4 round 2 (D3): a lone ambiguous verify-family marker (not a login
+// form) must still surface a diagnostic (Phase 3.5 weak/ambiguous contract).
+test('an ambiguous verify marker still produces a diagnostic (no signal)', () => {
+  const result = detector.detect({ pageTextPreview: 'Verify your account to continue' });
+  assert.equal(result.signal, undefined);
+  assert.ok(result.diagnostics.some((d) => d.code === 'auth-boundary-weak-marker'));
+  assert.equal(JSON.stringify(result).includes('account'), false); // still no text fragment
+});
+
+// Codex re-review of PR #4 round 2 (D4): a lone "Forgot your password?" must count as ONE
+// marker, not two, so an unrelated help article is not falsely signalled as a login page.
+test('overlapping password phrasing counts as a single marker', () => {
+  assert.equal(detector.detect({ pageTextPreview: 'Forgot your password? Reset it from your profile.' }).signal, undefined);
+  // a genuine form (sign-in + password) is still caught
+  assert.equal(detector.detect({ pageTextPreview: 'Sign in. Forgot your password?' }).signal.kind, 'login-required');
+});

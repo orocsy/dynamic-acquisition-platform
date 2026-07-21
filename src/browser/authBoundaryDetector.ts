@@ -77,6 +77,15 @@ export function isKnownAuthBoundaryReason(value: unknown): value is string {
 // Bound every untrusted input before scanning.
 const PAGE_TEXT_SCAN_LIMIT = 16_384;
 const OBSERVATION_SCAN_LIMIT = 200;
+// Bound a URL BEFORE `new URL`/sanitize/regex: a multi-megabyte path would otherwise be
+// parsed, returned in the signal, and scanned by the login-path regex — breaking this
+// slice's bounded-input guarantee (the adapter's later cap is defense in depth, not the
+// primary gate). An over-limit URL is dropped (undefined), never truncated into a new value.
+const URL_PREVIEW_LIMIT = 2048;
+
+function boundedSanitizeUrl(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length <= URL_PREVIEW_LIMIT ? sanitizeUrlPreview(value) : undefined;
+}
 
 const UNAUTHORIZED_STATUSES = new Set([401, 403]);
 
@@ -90,16 +99,24 @@ const MFA_TEXT_PATTERN = /(?:two[-\s]?factor|multi[-\s]?factor|verification code
 const CAPTCHA_TEXT_PATTERN = /(?:captcha|i'?m not a robot|unusual traffic|verify you are human)/i;
 const CONSENT_TEXT_PATTERN = /(?:consent required|accept (?:the )?terms to continue|review and accept)/i;
 
-// A login FORM (not a lone word): distinct corroborating markers. A single one is
-// WEAK (diagnostic only); TWO OR MORE distinct ones on a page are a conservative
-// login signal — this catches a login page that returns 200 on a non-login URL,
-// which the redirect/status rules miss (breakdown §3.5 "login-form signal").
+// A login FORM (not a lone word): DISTINCT, NON-OVERLAPPING corroborating markers, one per
+// form element. A single one is WEAK (diagnostic only); TWO OR MORE distinct ones on a page
+// are a conservative login signal — this catches a login page that returns 200 on a non-login
+// URL, which the redirect/status rules miss (breakdown §3.5 "login-form signal"). The markers
+// must not overlap: an earlier version let `forgot your password` also match the standalone
+// `password` marker, so a help article's lone "Forgot your password?" scored 2 and falsely
+// signalled. The persistence marker therefore excludes password phrasing.
 const LOGIN_FORM_MARKERS: readonly RegExp[] = [
-  /\b(?:sign[-\s]?in|log[-\s]?in)\b/i,
-  /\bpassword\b/i,
-  /\b(?:e-?mail|username)\b/i,
-  /\b(?:remember me|forgot (?:your )?password|keep me signed in)\b/i,
+  /\b(?:sign[-\s]?in|log[-\s]?in)\b/i, // the sign-in verb / link
+  /\bpassword\b/i, // a password field (covers "forgot your password" as ONE marker)
+  /\b(?:e-?mail|username)\b/i, // an identifier field
+  /\b(?:remember me|keep me signed in)\b/i, // the persistence checkbox (no password phrasing)
 ];
+
+// Ambiguous single markers that are NOT login-form elements but still warrant an
+// observability diagnostic (never a signal): the Phase 3.5 contract requires weak/ambiguous
+// evidence to surface. Restores the `verify`-family coverage the login-form rewrite dropped.
+const AMBIGUOUS_TEXT_PATTERN = /\bverif(?:y|ication)\b|\bauthenticate\b|\baccess denied\b/i;
 
 function clampConfidence(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -130,10 +147,7 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
 
     // 1. Navigation ended on an unauthorized status.
     const navigation = input.navigation;
-    const navPreview =
-      navigation && typeof navigation.finalUrlPreview === 'string'
-        ? sanitizeUrlPreview(navigation.finalUrlPreview)
-        : undefined;
+    const navPreview = navigation ? boundedSanitizeUrl(navigation.finalUrlPreview) : undefined;
     if (navigation && typeof navigation.status === 'number' && UNAUTHORIZED_STATUSES.has(navigation.status)) {
       return {
         signal: signalFrom('login-required', 0.9, 'navigation', 'navigation-unauthorized-status', navPreview, {
@@ -151,8 +165,7 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
     for (const observation of observations.slice(0, OBSERVATION_SCAN_LIMIT)) {
       const status = observation?.response?.status;
       if (typeof status === 'number' && UNAUTHORIZED_STATUSES.has(status)) {
-        const urlPreview =
-          typeof observation.request?.url === 'string' ? sanitizeUrlPreview(observation.request.url) : undefined;
+        const urlPreview = boundedSanitizeUrl(observation.request?.url);
         return {
           signal: signalFrom('login-required', 0.8, 'network', 'network-unauthorized-status', urlPreview, {
             statusCode: status,
@@ -194,7 +207,9 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
       if (loginMarkerCount >= 2) {
         return { signal: signalFrom('login-required', 0.6, 'page-snapshot', 'login-form-markers', navPreview, { markerCount: loginMarkerCount }), diagnostics };
       }
-      if (loginMarkerCount === 1) {
+      // A single login-form marker OR an ambiguous verify-family marker: no signal, but the
+      // uncertain auth boundary must still be observable (Phase 3.5 weak/ambiguous contract).
+      if (loginMarkerCount === 1 || AMBIGUOUS_TEXT_PATTERN.test(text)) {
         diagnostics.push({ level: 'info', code: 'auth-boundary-weak-marker' });
       }
     }

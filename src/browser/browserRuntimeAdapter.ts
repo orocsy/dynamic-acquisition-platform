@@ -104,11 +104,15 @@ export async function requestHumanInterventionFromBrowser(
   input: RequestHumanInterventionFromBrowserInput,
 ): Promise<RuntimeCoordinatorRequestHumanInterventionResult> {
   const signal = input.signal;
-  const kind = KIND_MAP[signal?.kind as BrowserAuthBoundaryKind];
-  if (!kind) {
-    // A foreign detector's unknown kind must not be echoed (it could carry anything).
+  // OWN-property check, not a bare lookup: a foreign detector could send a prototype key
+  // (`__proto__`, `constructor`, `toString`) whose INHERITED value is truthy, bypassing a
+  // `!kind` test and persisting a non-string kind + bogus instructions. hasOwnProperty
+  // admits only the five real kinds. The value must not be echoed (it could carry anything).
+  const rawKind = signal?.kind;
+  if (typeof rawKind !== 'string' || !Object.prototype.hasOwnProperty.call(KIND_MAP, rawKind)) {
     throw new Error('browser auth boundary signal kind is not a known intervention kind');
   }
+  const kind = KIND_MAP[rawKind as BrowserAuthBoundaryKind];
   // This is a trust boundary (any detector): reject a non-string ref with a clean error
   // rather than the incidental TypeError guardSurrogateSessionId's opacity check would
   // throw on a non-string. Neither echoes the value.

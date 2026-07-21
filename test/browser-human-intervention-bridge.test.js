@@ -248,3 +248,17 @@ test('bridge rejects a non-string browserSessionRef cleanly', async () => {
     );
   }
 });
+
+// Codex re-review of PR #4 round 2 (D1): a prototype-key signal kind (__proto__,
+// constructor, toString) returns an inherited truthy value from an ordinary-object lookup,
+// bypassing the unknown-kind rejection. An own-property check must reject it -- without echo.
+test('bridge rejects prototype-key signal kinds without echoing them', async () => {
+  const coordinator = { requestHumanIntervention: async () => { throw new Error('should not reach coordinator'); } };
+  for (const kind of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+    await assert.rejects(
+      () => requestHumanInterventionFromBrowser({ coordinator }, { runId: 'r', expectedVersion: 2, signal: loginSignal({ kind }), browserSessionRef: 'session:abc-123' }),
+      /kind is not a known intervention kind/,
+      kind,
+    );
+  }
+});

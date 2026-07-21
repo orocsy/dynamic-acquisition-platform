@@ -44,7 +44,7 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   explicit kind map, known-reason forwarding, fixed §8.6 instructions,
   coordinator-backed `waiting_for_human`, once-only resume token never
   stored/logged, optional post-record `markStale` whose failure never loses the
-  token). Tests 260/260; independent probe green. NOTE: repo file naming stays
+  token). Tests 271/271 after codex review rounds 1-2 (6 + 4 findings fixed); independent probe green. NOTE: repo file naming stays
   camelCase (user decision 2026-07-21, matching all existing src files + the
   LLD) — a user-level kebab-case hook exists but is overridden for this repo.
 - **Known accepted boundary (disclosed, not hidden):** the observation-id guard is

@@ -164,3 +164,19 @@ test('session strips MIME parameters before storing an observation', async () =>
   assert.equal(JSON.stringify(result).includes('MIMESECRET'), false);
   assert.equal(JSON.stringify(await session.listObservations('run_1')).includes('MIMESECRET'), false);
 });
+
+// Codex re-review of PR #5 round 1 (H3): start() must signal the source to begin/reset the
+// capture window, so a re-start at a later boundary (post-auth-recheck) discards earlier traffic.
+test('start() calls source.beginCapture to reset the window', async () => {
+  const begins = [];
+  const source = { beginCapture: (input) => { begins.push(input.pageTargetRef); }, collect: async () => [] };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // re-start resets again
+  assert.deepEqual(begins, ['page:t-1', 'page:t-1']);
+  // a source without beginCapture (a fixture) still works
+  const plain = new BrowserNetworkCaptureSession({ collect: async () => [] });
+  await plain.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  const r = await plain.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(r.observations.length, 0);
+});

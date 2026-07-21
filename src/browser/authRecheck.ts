@@ -126,36 +126,69 @@ export class NotImplementedAuthStateProbe implements AuthStateProbe {
   }
 }
 
+export const DEFAULT_AUTH_RECHECK_TIMEOUT_MS = 30_000;
+
+const PROBE_TIMEOUT = Symbol('auth-recheck-probe-timeout');
+
+// Map a thrown probe error to a recheck failure code. A page-target `target-stale` error must
+// stay `target-stale` so the resume flow's safe-recreation path can run; everything else is a
+// generic `session-stale`. The error's own message is NEVER surfaced (only the mapped code).
+function probeErrorCode(error: unknown): BrowserAuthRecheckFailureCode {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return code === 'target-stale' ? 'target-stale' : 'session-stale';
+}
+
 /**
  * Real-shaped rechecker that REUSES the Phase 3.5 detector as the auth-signal oracle: it
- * probes the target, then runs the detector over the probe output. Any auth-boundary signal
- * (login/mfa/consent/captcha) means the page is STILL gated -> `still-unauthorized`; no signal
- * -> `ok`. The probe's browser wire is the deferred piece; the classification logic is real
- * and tested. Composition, not a second copy of the signal rules.
+ * probes the target, then runs the detector over the probe output. Success requires BOTH no
+ * auth-boundary signal AND positive evidence the page is reachable/usable (a navigation that
+ * succeeded with a non-error status) — absence of login markers alone is not enough (a 500 /
+ * empty probe must not be reported as authenticated). The probe's browser wire is the deferred
+ * piece; the classification logic is real and tested. Composition, not a second copy of rules.
  */
 export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
   readonly #probe: AuthStateProbe;
   readonly #detector: AuthBoundaryDetector;
+  readonly #timeoutMs: number;
 
-  constructor(probe: AuthStateProbe = new NotImplementedAuthStateProbe(), detector: AuthBoundaryDetector = new ConservativeAuthBoundaryDetector()) {
+  constructor(
+    probe: AuthStateProbe = new NotImplementedAuthStateProbe(),
+    detector: AuthBoundaryDetector = new ConservativeAuthBoundaryDetector(),
+    timeoutMs: number = DEFAULT_AUTH_RECHECK_TIMEOUT_MS,
+  ) {
     this.#probe = probe;
     this.#detector = detector;
+    this.#timeoutMs = timeoutMs > 0 ? timeoutMs : DEFAULT_AUTH_RECHECK_TIMEOUT_MS;
   }
 
   async recheck(input: BrowserAuthRecheckInput): Promise<BrowserAuthRecheckResult> {
     guardRecheckInput(input);
-    let observed;
+
+    // Enforce a deadline: a transport promise that never settles must not hang the API after
+    // the checkpoint has entered running_after_resume — it becomes a structured recheck-timeout.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let observed: Awaited<ReturnType<AuthStateProbe['probe']>>;
     try {
-      observed = await this.#probe.probe({
+      const probing = this.#probe.probe({
         runId: input.runId,
         browserSessionRef: input.browserSessionRef,
         pageTargetRef: input.pageTargetRef === undefined ? undefined : String(input.pageTargetRef),
         targetUrl: input.targetUrl,
       });
-    } catch {
-      // A probe transport failure is not an auth verdict; surface it as a session-stale
-      // recheck failure (value-free) so the flow fails safely rather than assuming success.
-      return authRecheckFailure('session-stale', [{ level: 'warning', code: 'auth-recheck-probe-failed' }]);
+      const timeout = new Promise<typeof PROBE_TIMEOUT>((resolve) => {
+        timer = setTimeout(() => resolve(PROBE_TIMEOUT), this.#timeoutMs);
+      });
+      const raced = await Promise.race([probing, timeout]);
+      if (raced === PROBE_TIMEOUT) {
+        return authRecheckFailure('recheck-timeout', [{ level: 'warning', code: 'auth-recheck-probe-timeout' }]);
+      }
+      observed = raced;
+    } catch (error) {
+      // A probe transport failure is not an auth verdict; map a known target-stale error so the
+      // flow's recreation path stays reachable, else fail safe as session-stale (value-free).
+      return authRecheckFailure(probeErrorCode(error), [{ level: 'warning', code: 'auth-recheck-probe-failed' }]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
 
     const detection = this.#detector.detect({
@@ -170,6 +203,18 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
         { level: 'info', code: 'auth-recheck-boundary-persists', boundaryKind: detection.signal.kind },
       ]);
     }
+
+    // Positive usability evidence: a navigation that actually loaded a non-error page. No such
+    // evidence -> do NOT report success (an unrecognized-but-broken page must not pass).
+    const navigation = observed?.navigation;
+    const usable =
+      !!navigation &&
+      navigation.ok === true &&
+      (typeof navigation.status !== 'number' || (navigation.status >= 200 && navigation.status < 400));
+    if (!usable) {
+      return authRecheckFailure('still-unauthorized', [{ level: 'info', code: 'auth-recheck-target-not-usable' }]);
+    }
+
     return { ok: true, confidence: 0.9, ...(input.pageTargetRef !== undefined ? { pageTargetRef: input.pageTargetRef } : {}), diagnostics: [] };
   }
 }

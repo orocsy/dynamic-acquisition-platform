@@ -29,9 +29,16 @@ export interface NetworkCaptureSession {
  * DI seam (mirrors `CdpTargetTransport`): the upstream source of raw observations a
  * daemon/CDP transport captured for a page target between `start` and `stop`. A fake supplies
  * fixtures in tests; the real transport is out of scope for Phase 3.4.
+ *
+ * `beginCapture` is the "start capturing NOW / reset the window" signal (optional; a fixture
+ * source ignores it). The session calls it on every `start`, so a buffering transport can drop
+ * any traffic seen before the window and only report what follows. Phase 3.6 relies on this to
+ * begin discovery capture strictly AFTER the post-auth-recheck boundary — otherwise a source
+ * that buffers from connect-time would fold human-login / recheck traffic into the evidence.
  */
 export interface NetworkObservationSource {
   collect(input: { runId: string; pageTargetRef: string }): Promise<readonly BrowserObservation[]>;
+  beginCapture?(input: { runId: string; pageTargetRef: string }): void | Promise<void>;
 }
 
 export class NotImplementedNetworkObservationSource implements NetworkObservationSource {
@@ -111,7 +118,14 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
   }
 
   async start(input: StartNetworkCaptureInput): Promise<void> {
+    const expectedTarget = String(input.pageTargetRef);
     this.#active.add(this.#key(input.runId, input.pageTargetRef));
+    // RESET the capture window: signal the source to begin/reset NOW so a re-start at a later
+    // boundary (e.g. post-auth-recheck) discards anything the transport buffered before it. A
+    // fixture source omits beginCapture and is unaffected.
+    if (this.#source.beginCapture) {
+      await this.#source.beginCapture({ runId: input.runId, pageTargetRef: expectedTarget });
+    }
   }
 
   async stop(input: StopNetworkCaptureInput): Promise<NetworkCaptureResult> {

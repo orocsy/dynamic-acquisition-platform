@@ -92,3 +92,43 @@ test('the default detector-backed probe is not implemented (real transport defer
   assert.equal(result.ok, false);
   assert.equal(result.code, 'session-stale');
 });
+
+// Codex re-review of PR #5 round 1 (H1): success requires positive usability evidence, not
+// merely the absence of login markers -- a 500/failed/empty probe must NOT pass.
+test('detector-backed recheck requires a usable page for success', async () => {
+  const nav = (o) => ({ ok: false, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], ...o });
+  // a server-error page (no login marker) is NOT authenticated
+  let r = await new DetectorBackedAuthRechecker(probeOf({ navigation: nav({ ok: false, status: 500 }) })).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'still-unauthorized');
+  assert.equal(r.diagnostics[0].code, 'auth-recheck-target-not-usable');
+  // an empty probe (no navigation at all) is NOT authenticated
+  r = await new DetectorBackedAuthRechecker(probeOf({})).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r.ok, false);
+  // a navigation that loaded a good page IS authenticated
+  r = await new DetectorBackedAuthRechecker(probeOf({ navigation: { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status: 200, finalUrlPreview: 'https://app.example.com/home' } })).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r.ok, true);
+});
+
+// Codex re-review of PR #5 round 1 (H7): a probe error that reports the page controller's
+// `target-stale` code must stay `target-stale` so the flow's recreation path stays reachable.
+test('detector-backed recheck preserves a target-stale probe error', async () => {
+  const staleErr = Object.assign(new Error('target is stale'), { code: 'target-stale' });
+  const r = await new DetectorBackedAuthRechecker({ probe: async () => { throw staleErr; } }).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'target-stale'); // NOT collapsed to session-stale
+  // a generic error still fails safe as session-stale
+  const generic = await new DetectorBackedAuthRechecker({ probe: async () => { throw new Error('boom'); } }).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(generic.code, 'session-stale');
+});
+
+// Codex re-review of PR #5 round 1 (H8): a probe that never settles must not hang -- an
+// enforced deadline yields the structured recheck-timeout result.
+test('detector-backed recheck enforces a probe deadline', async () => {
+  const neverSettles = { probe: () => new Promise(() => {}) };
+  const rechecker = new DetectorBackedAuthRechecker(neverSettles, undefined, 20); // 20ms deadline
+  const r = await rechecker.recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'recheck-timeout');
+  assert.equal(r.diagnostics[0].code, 'auth-recheck-probe-timeout');
+});

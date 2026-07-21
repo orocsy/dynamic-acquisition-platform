@@ -35,7 +35,7 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   agent merge was permission-gated); after merge, next slice is Phase 3.5.**
   (Ops note: codex posts a ZERO-findings result as an ISSUE comment, not a PR
   review — poll issues/comments too when watching for it.)
-- **2026-07-15 later: PR #3 MERGED to main (e6ef1cd). Phase 3.5 (auth boundary →
+- **2026-07-21: PR #3 MERGED to main (e6ef1cd). Phase 3.5 (auth boundary →
   human intervention bridge) implemented on `phase3.5-auth-intervention`:**
   `src/browser/authBoundaryDetector.ts` (conservative detector; fixed
   `KNOWN_AUTH_BOUNDARY_REASONS` vocabulary, sanitized previews, bounded scans,
@@ -45,7 +45,7 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   coordinator-backed `waiting_for_human`, once-only resume token never
   stored/logged, optional post-record `markStale` whose failure never loses the
   token). Tests 260/260; independent probe green. NOTE: repo file naming stays
-  camelCase (user decision 2026-07-15, matching all existing src files + the
+  camelCase (user decision 2026-07-21, matching all existing src files + the
   LLD) — a user-level kebab-case hook exists but is overridden for this repo.
 - **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
   a structural + credential-keyword denylist; a keyword-free random secret used AS

@@ -195,3 +195,20 @@ test('a marker-word host does not trigger the login-path rule', () => {
   assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: 'https://app.example.com/sso/authorize' }) }).signal.kind, 'login-required');
   assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: '/login/callback' }) }).signal.kind, 'login-required');
 });
+
+// Codex re-review of PR #4 round 4 (F2): an explicit consent screen must win over a generic
+// 401/403 or a login-looking path, not fall through to login-required.
+test('explicit consent text overrides status and login-path rules', () => {
+  assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: 'https://idp.example.com/oauth2/authorize' }), pageTextPreview: 'You must accept the terms to continue' }).signal.kind, 'consent-required');
+  assert.equal(detector.detect({ navigation: nav({ status: 401 }), pageTextPreview: 'Consent required to share your profile' }).signal.kind, 'consent-required');
+});
+
+// Codex re-review of PR #4 round 4 (F3): file-style login routes are recognized.
+test('file-style login routes are recognized as login redirects', () => {
+  for (const url of ['https://app.example.com/login.html', 'https://app.example.com/signin.php', 'https://app.example.com/auth.aspx', 'https://app.example.com/oauth2/authorize.do'])
+    assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: url }) }).signal.kind, 'login-required', url);
+  // a page-only extension list -> an auth API (.json) is NOT flagged
+  assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: 'https://app.example.com/auth.json' }) }).signal, undefined);
+  // and a non-auth file is not flagged
+  assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: 'https://app.example.com/authors.html' }) }).signal, undefined);
+});

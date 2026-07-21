@@ -93,7 +93,11 @@ const UNAUTHORIZED_STATUSES = new Set([401, 403]);
 // host): a single-label host that is itself a marker word (`https://auth/dashboard`,
 // `https://login/account`) otherwise makes the full-URL regex match `//auth/`|`//login/`
 // and falsely pause a run on an intranet host.
-const LOGIN_PATH_PATTERN = /\/(?:log[-_]?in|sign[-_]?in|sso|authorize|auth|oauth2?)(?:\/|$)/i;
+// Terminator accepts a `/`, the end of the pathname, OR a bounded web-page extension so a
+// file-style login route (`/login.html`, `/signin.php`, `/auth.aspx`) is not missed. The
+// extension list is deliberately page-only (not `.json`/`.js`) to avoid flagging auth APIs.
+const LOGIN_PATH_PATTERN =
+  /\/(?:log[-_]?in|sign[-_]?in|sso|authorize|auth|oauth2?)(?:\/|\.(?:html?|php|aspx?|jspx?|do|cgi|action)\b|$)/i;
 
 function pathnameOf(preview: string): string {
   // navPreview is already sanitized to `https://host/path` OR a `/relative` path. For an
@@ -169,9 +173,10 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
       }
     }
 
-    // 1. EXPLICIT page-challenge text wins over a generic 401/403: an anti-bot CAPTCHA page
-    //    (or an MFA prompt) commonly returns 403, and classifying it as `login-required`
-    //    would tell the human to log in instead of solving the visible challenge. CAPTCHA is
+    // 1. EXPLICIT page-challenge text wins over a generic 401/403 or a login-looking path: an
+    //    anti-bot CAPTCHA / MFA / consent screen commonly rides on those (a consent prompt on
+    //    `/oauth2/authorize`, a captcha behind a 403), and classifying it as `login-required`
+    //    would tell the human to log in instead of answering the visible prompt. CAPTCHA is
     //    checked before MFA because "enter the captcha verification code" matches the generic
     //    `verification code` MFA phrase too, and the specific kind must win.
     if (text !== undefined) {
@@ -180,6 +185,9 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
       }
       if (MFA_TEXT_PATTERN.test(text)) {
         return { signal: signalFrom('mfa-required', 0.75, 'page-snapshot', 'mfa-page-marker', navPreview, undefined), diagnostics };
+      }
+      if (CONSENT_TEXT_PATTERN.test(text)) {
+        return { signal: signalFrom('consent-required', 0.7, 'page-snapshot', 'consent-page-marker', navPreview, undefined), diagnostics };
       }
     }
 
@@ -219,11 +227,9 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
       };
     }
 
-    // 5. Remaining page-text rules: consent, then a corroborated login FORM, then weak markers.
+    // 5. Remaining page-text rules: a corroborated login FORM, then weak markers. (CAPTCHA/
+    //    MFA/consent were already evaluated in block 1, ahead of the generic status rules.)
     if (text !== undefined) {
-      if (CONSENT_TEXT_PATTERN.test(text)) {
-        return { signal: signalFrom('consent-required', 0.6, 'page-snapshot', 'consent-page-marker', navPreview, undefined), diagnostics };
-      }
       // Login FORM: count DISTINCT markers. >= 2 is a conservative login signal; exactly
       // 1 is a lone generic word -> record, don't interrupt the run.
       const loginMarkerCount = LOGIN_FORM_MARKERS.reduce((n, pattern) => (pattern.test(text as string) ? n + 1 : n), 0);

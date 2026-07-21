@@ -64,6 +64,18 @@ export type RequestHumanInterventionFromBrowserInput = {
 // allocation or land in a checkpoint (this slice's bounded-untrusted-input guarantee).
 const MAX_URL_PREVIEW_LENGTH = 2048;
 
+// Read one untrusted signal field exactly once, tolerating a hostile getter: a field could
+// be backed by a getter that THROWS an exception carrying sensitive source text, which would
+// otherwise escape in place of the fixed non-echoing errors. A throw is treated as an absent
+// field (undefined) and handled by the same validation as a missing one.
+function readSignalField<T>(read: () => T): T | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
+  }
+}
+
 // Explicit table, not a cast: if either union changes shape, this is a type error
 // here rather than a silently mislabeled intervention.
 const KIND_MAP: Record<BrowserAuthBoundaryKind, HumanInterventionKind> = {
@@ -103,27 +115,27 @@ export async function requestHumanInterventionFromBrowser(
   deps: BrowserRuntimeAdapterDeps,
   input: RequestHumanInterventionFromBrowserInput,
 ): Promise<RuntimeCoordinatorRequestHumanInterventionResult> {
-  const signal = input.signal;
-  // SNAPSHOT every untrusted signal field ONCE. A foreign detector could back these with
-  // GETTERS that return a valid value to the check and then a secret to the later use
-  // (a TOCTOU leak): a `reason` getter passing isKnownAuthBoundaryReason, then returning
-  // secret text for interpolation. Read once here; validate and build output from the
-  // snapshots only, never from `signal.*` again.
-  const rawKind: unknown = signal?.kind;
-  const rawReason: unknown = signal?.reason;
-  const rawUrlPreview: unknown = signal?.urlPreview;
-  const rawSource: unknown = signal?.source;
-  const rawConfidence: unknown = signal?.confidence;
-
-  // OWN-property check, not a bare lookup: a foreign detector could send a prototype key
-  // (`__proto__`, `constructor`, `toString`) whose INHERITED value is truthy, bypassing a
-  // `!kind` test and persisting a non-string kind + bogus instructions. hasOwnProperty
-  // admits only the five real kinds. The value must not be echoed (it could carry anything).
+  const signal: BrowserAuthBoundarySignal | undefined = input.signal;
+  // Validate KIND FIRST, before touching any other getter: an invalid-kind signal must be
+  // rejected with the fixed non-echoing error without invoking (or triggering side effects
+  // in) the remaining hostile getters. OWN-property check, not a bare lookup: a prototype key
+  // (`__proto__`, `constructor`, `toString`) has a truthy INHERITED value that would bypass a
+  // `!kind` test. The value must not be echoed (it could carry anything).
+  const rawKind = readSignalField(() => signal?.kind);
   if (typeof rawKind !== 'string' || !Object.prototype.hasOwnProperty.call(KIND_MAP, rawKind)) {
     throw new Error('browser auth boundary signal kind is not a known intervention kind');
   }
   const signalKind = rawKind as BrowserAuthBoundaryKind;
   const kind = KIND_MAP[signalKind];
+
+  // SNAPSHOT the remaining untrusted fields ONCE each (kind is now known valid). A foreign
+  // detector could back these with GETTERS that return a valid value to the check and then a
+  // secret to the later use (TOCTOU); reading once and building output only from the snapshot
+  // closes that. readSignalField also neutralizes a getter that throws.
+  const rawReason = readSignalField(() => signal?.reason);
+  const rawUrlPreview = readSignalField(() => signal?.urlPreview);
+  const rawSource = readSignalField(() => signal?.source);
+  const rawConfidence = readSignalField(() => signal?.confidence);
   // This is a trust boundary (any detector): reject a non-string ref with a clean error
   // rather than the incidental TypeError guardSurrogateSessionId's opacity check would
   // throw on a non-string. Neither echoes the value.

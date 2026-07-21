@@ -290,3 +290,27 @@ test('bridge snapshots signal fields once (getter TOCTOU cannot leak)', async ()
   assert.ok(captured[0].reason.includes('navigation-unauthorized-status'));
   assert.equal(captured[0].url, 'https://idp.example.com/login');
 });
+
+// Codex re-review of PR #4 round 4 (F1): kind is validated BEFORE the other getters are read,
+// so a signal with an invalid kind and a throwing (sensitive) getter is rejected with the
+// fixed non-echoing error and never invokes that getter. A throwing getter on a valid signal
+// is neutralized (treated as absent), never escaping with its message.
+test('bridge validates kind before other getters and neutralizes throwing getters', async () => {
+  const coordinator = { requestHumanIntervention: async (input) => ({ checkpoint: {}, request: { id: 'x' }, resumeToken: 't', input }) };
+  // invalid kind + a reason getter that would throw sensitive text -> fixed error, getter not read
+  let reasonRead = false;
+  const badKind = { kind: 'not-a-kind', get reason() { reasonRead = true; throw new Error('sk-live-GETTERSECRET'); }, source: 'navigation', confidence: 1 };
+  await assert.rejects(
+    () => requestHumanInterventionFromBrowser({ coordinator }, { runId: 'r', expectedVersion: 2, signal: badKind, browserSessionRef: 'session:abc-123' }),
+    (err) => { assert.equal(err.message.includes('GETTERSECRET'), false); assert.match(err.message, /kind is not a known intervention kind/); return true; },
+  );
+  assert.equal(reasonRead, false, 'other getters must not be read when kind is invalid');
+
+  // valid kind + a throwing url getter -> neutralized (treated as absent), request still made
+  const captured = [];
+  const co2 = { requestHumanIntervention: async (input) => { captured.push(input); return { checkpoint: {}, request: { id: 'x' }, resumeToken: 't' }; } };
+  const throwUrl = { kind: 'login-required', confidence: 0.9, source: 'navigation', reason: 'navigation-unauthorized-status', get urlPreview() { throw new Error('sk-live-URLGETTER'); } };
+  await requestHumanInterventionFromBrowser({ coordinator: co2 }, { runId: 'r', expectedVersion: 2, signal: throwUrl, browserSessionRef: 'session:abc-123' });
+  assert.equal('url' in captured[0], false);
+  assert.equal(JSON.stringify(captured[0]).includes('URLGETTER'), false);
+});

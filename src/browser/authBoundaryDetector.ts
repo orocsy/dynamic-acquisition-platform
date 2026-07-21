@@ -93,11 +93,14 @@ const UNAUTHORIZED_STATUSES = new Set([401, 403]);
 // host): a single-label host that is itself a marker word (`https://auth/dashboard`,
 // `https://login/account`) otherwise makes the full-URL regex match `//auth/`|`//login/`
 // and falsely pause a run on an intranet host.
-// Terminator accepts a `/`, the end of the pathname, OR a bounded web-page extension so a
-// file-style login route (`/login.html`, `/signin.php`, `/auth.aspx`) is not missed. The
-// extension list is deliberately page-only (not `.json`/`.js`) to avoid flagging auth APIs.
+// Terminator accepts a `/`, the end of the pathname, OR a bounded web-page extension that
+// ITSELF terminates the pathname (end or `/`), so a file-style login route (`/login.html`,
+// `/signin.php`, `/auth.aspx`) is caught while a compound suffix like `/auth.php.json`,
+// `/login.html.js`, or `/auth.php-backup` is NOT (a bare `\b` succeeded before the next dot/
+// hyphen, defeating the page-only intent). The extension list is deliberately page-only (not
+// `.json`/`.js`) to avoid flagging auth APIs/assets.
 const LOGIN_PATH_PATTERN =
-  /\/(?:log[-_]?in|sign[-_]?in|sso|authorize|auth|oauth2?)(?:\/|\.(?:html?|php|aspx?|jspx?|do|cgi|action)\b|$)/i;
+  /\/(?:log[-_]?in|sign[-_]?in|sso|authorize|auth|oauth2?)(?:\/|$|\.(?:html?|php|aspx?|jspx?|do|cgi|action)(?:\/|$))/i;
 
 function pathnameOf(preview: string): string {
   // navPreview is already sanitized to `https://host/path` OR a `/relative` path. For an

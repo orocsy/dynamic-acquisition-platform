@@ -212,3 +212,13 @@ test('file-style login routes are recognized as login redirects', () => {
   // and a non-auth file is not flagged
   assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: 'https://app.example.com/authors.html' }) }).signal, undefined);
 });
+
+// Codex re-review of PR #4 round 5 (G1): a page extension must TERMINATE the pathname; a
+// compound suffix (.php.json, .html.js, .php-backup) is an API/asset route, not a login page.
+test('a compound suffix after a page extension is not a login route', () => {
+  for (const url of ['https://a.com/auth.php.json', 'https://a.com/login.html.js', 'https://a.com/auth.php-backup', 'https://a.com/signin.php.bak'])
+    assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: url }) }).signal, undefined, url);
+  // the plain page-style routes still fire
+  for (const url of ['https://a.com/login.html', 'https://a.com/signin.php', 'https://a.com/auth.aspx'])
+    assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: url }) }).signal.kind, 'login-required', url);
+});

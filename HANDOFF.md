@@ -47,6 +47,7 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   token). Tests 271/271 after codex review rounds 1-2 (6 + 4 findings fixed); independent probe green. NOTE: repo file naming stays
   camelCase (user decision 2026-07-21, matching all existing src files + the
   LLD) — a user-level kebab-case hook exists but is overridden for this repo.
+- **2026-07-21: PR #4 codex loop CONVERGED TO ZERO** (6 rounds, findings 5->4->4->3->1->0 on commits 52f85da,6ab006e-style per round; final clean on 280a2f6). Security-critical items landed early and are closed: **C3** (nextStepId must be auth_state_recheck or resumeRun permanently fails -- my tests had never exercised resume, which hid it) and **E1** (getter-backed signal TOCTOU -> snapshot every untrusted field once). Later rounds were conservative-detector accuracy (challenge-vs-status precedence, login-path URL shapes). 279 tests. READY TO MERGE; then Phase 3.6 (browser-backed resume auth recheck, LLD §9).
 - **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
   a structural + credential-keyword denylist; a keyword-free random secret used AS
   an id is indistinguishable from a legit opaque id. If codex re-flags this, the

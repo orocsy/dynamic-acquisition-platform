@@ -262,3 +262,31 @@ test('bridge rejects prototype-key signal kinds without echoing them', async () 
     );
   }
 });
+
+// Codex re-review of PR #4 round 3 (E1): a foreign detector could back signal fields with
+// GETTERS that pass validation on the first read and return a secret on the second (TOCTOU).
+// The adapter must snapshot each field once, so the persisted values never see the secret.
+test('bridge snapshots signal fields once (getter TOCTOU cannot leak)', async () => {
+  const captured = [];
+  const coordinator = { requestHumanIntervention: async (input) => { captured.push(input); return { checkpoint: {}, request: { id: 'x' }, resumeToken: 't' }; } };
+  let reasonReads = 0;
+  let urlReads = 0;
+  let sourceReads = 0;
+  const evil = {
+    kind: 'login-required',
+    get confidence() { return 0.9; },
+    get reason() { reasonReads += 1; return reasonReads === 1 ? 'navigation-unauthorized-status' : 'sk-live-REASONSECRET'; },
+    get urlPreview() { urlReads += 1; return urlReads === 1 ? 'https://idp.example.com/login' : 'https://evil.example.com/x?token=URLSECRET'; },
+    get source() { sourceReads += 1; return sourceReads === 1 ? 'navigation' : 'sk-live-SOURCESECRET'; },
+  };
+  await requestHumanInterventionFromBrowser({ coordinator }, { runId: 'r', expectedVersion: 2, signal: evil, browserSessionRef: 'session:abc-123' });
+  const sent = JSON.stringify(captured[0]);
+  assert.equal(sent.includes('REASONSECRET'), false);
+  assert.equal(sent.includes('URLSECRET'), false);
+  assert.equal(sent.includes('SOURCESECRET'), false);
+  // each untrusted field was read at most once
+  assert.ok(reasonReads <= 1 && urlReads <= 1 && sourceReads <= 1, `reads: reason=${reasonReads} url=${urlReads} source=${sourceReads}`);
+  // the first-read (valid) values are what got persisted
+  assert.ok(captured[0].reason.includes('navigation-unauthorized-status'));
+  assert.equal(captured[0].url, 'https://idp.example.com/login');
+});

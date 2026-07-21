@@ -104,15 +104,26 @@ export async function requestHumanInterventionFromBrowser(
   input: RequestHumanInterventionFromBrowserInput,
 ): Promise<RuntimeCoordinatorRequestHumanInterventionResult> {
   const signal = input.signal;
+  // SNAPSHOT every untrusted signal field ONCE. A foreign detector could back these with
+  // GETTERS that return a valid value to the check and then a secret to the later use
+  // (a TOCTOU leak): a `reason` getter passing isKnownAuthBoundaryReason, then returning
+  // secret text for interpolation. Read once here; validate and build output from the
+  // snapshots only, never from `signal.*` again.
+  const rawKind: unknown = signal?.kind;
+  const rawReason: unknown = signal?.reason;
+  const rawUrlPreview: unknown = signal?.urlPreview;
+  const rawSource: unknown = signal?.source;
+  const rawConfidence: unknown = signal?.confidence;
+
   // OWN-property check, not a bare lookup: a foreign detector could send a prototype key
   // (`__proto__`, `constructor`, `toString`) whose INHERITED value is truthy, bypassing a
   // `!kind` test and persisting a non-string kind + bogus instructions. hasOwnProperty
   // admits only the five real kinds. The value must not be echoed (it could carry anything).
-  const rawKind = signal?.kind;
   if (typeof rawKind !== 'string' || !Object.prototype.hasOwnProperty.call(KIND_MAP, rawKind)) {
     throw new Error('browser auth boundary signal kind is not a known intervention kind');
   }
-  const kind = KIND_MAP[rawKind as BrowserAuthBoundaryKind];
+  const signalKind = rawKind as BrowserAuthBoundaryKind;
+  const kind = KIND_MAP[signalKind];
   // This is a trust boundary (any detector): reject a non-string ref with a clean error
   // rather than the incidental TypeError guardSurrogateSessionId's opacity check would
   // throw on a non-string. Neither echoes the value.
@@ -130,30 +141,30 @@ export async function requestHumanInterventionFromBrowser(
   }
   const nextStepId = DEFAULT_RESUME_ENTRY_STEP_ID;
 
-  // Reason: fixed composition + the detector's code ONLY when it is a known one.
-  const reason = isKnownAuthBoundaryReason(signal.reason)
-    ? `Browser auth boundary (${kind}): ${signal.reason}`
+  // Reason: fixed composition + the detector's code ONLY when the SNAPSHOT is a known one.
+  const reason = isKnownAuthBoundaryReason(rawReason)
+    ? `Browser auth boundary (${kind}): ${rawReason}`
     : `Browser auth boundary (${kind})`;
 
-  // Url: bound the untrusted preview length, then re-sanitize; anything unsafe or
+  // Url: bound the untrusted preview SNAPSHOT length, then re-sanitize; anything unsafe or
   // overlong is dropped, not fixed.
   const url =
-    typeof signal.urlPreview === 'string' && signal.urlPreview.length <= MAX_URL_PREVIEW_LENGTH
-      ? sanitizeUrlPreview(signal.urlPreview)
+    typeof rawUrlPreview === 'string' && rawUrlPreview.length <= MAX_URL_PREVIEW_LENGTH
+      ? sanitizeUrlPreview(rawUrlPreview)
       : undefined;
 
-  const source = SIGNAL_SOURCES.has(signal.source) ? signal.source : 'manual-policy';
+  const source = SIGNAL_SOURCES.has(rawSource as BrowserAuthBoundarySignal['source'])
+    ? (rawSource as BrowserAuthBoundarySignal['source'])
+    : 'manual-policy';
   const confidence =
-    typeof signal.confidence === 'number' && Number.isFinite(signal.confidence)
-      ? Math.min(1, Math.max(0, signal.confidence))
-      : 0;
+    typeof rawConfidence === 'number' && Number.isFinite(rawConfidence) ? Math.min(1, Math.max(0, rawConfidence)) : 0;
 
   const result = await deps.coordinator.requestHumanIntervention({
     runId: input.runId,
     expectedVersion: input.expectedVersion,
     kind,
     reason,
-    instructions: buildHumanInstructions(signal.kind),
+    instructions: buildHumanInstructions(signalKind),
     nextStepId,
     browserSessionRef,
     ...(url !== undefined ? { url } : {}),

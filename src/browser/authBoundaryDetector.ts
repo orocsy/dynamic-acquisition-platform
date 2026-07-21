@@ -89,13 +89,26 @@ function boundedSanitizeUrl(value: unknown): string | undefined {
 
 const UNAUTHORIZED_STATUSES = new Set([401, 403]);
 
-// Path markers on an already-sanitized preview URL that conservatively indicate a
-// login redirect. Tested against the sanitized preview only (never the raw URL).
+// Path markers indicating a login redirect. Tested against the PATHNAME only (never the
+// host): a single-label host that is itself a marker word (`https://auth/dashboard`,
+// `https://login/account`) otherwise makes the full-URL regex match `//auth/`|`//login/`
+// and falsely pause a run on an intranet host.
 const LOGIN_PATH_PATTERN = /\/(?:log[-_]?in|sign[-_]?in|sso|authorize|auth|oauth2?)(?:\/|$)/i;
 
+function pathnameOf(preview: string): string {
+  // navPreview is already sanitized to `https://host/path` OR a `/relative` path. For an
+  // absolute URL, test the pathname only; a relative path has no host to confuse the match.
+  try {
+    return new URL(preview).pathname;
+  } catch {
+    return preview;
+  }
+}
+
 // Page-text markers. Deliberately narrow phrases; a lone generic word ("login",
-// "verify") is treated as WEAK and produces a diagnostic, not a signal.
-const MFA_TEXT_PATTERN = /(?:two[-\s]?factor|multi[-\s]?factor|verification code|one[-\s]?time (?:code|password)|authenticator app|\b2fa\b)/i;
+// "verify") is treated as WEAK and produces a diagnostic, not a signal. Includes the bare
+// `OTP`/`MFA` acronyms (bounded) alongside `2FA` — common on real prompts ("Enter OTP").
+const MFA_TEXT_PATTERN = /(?:two[-\s]?factor|multi[-\s]?factor|verification code|one[-\s]?time (?:code|password)|authenticator app|\b2fa\b|\botp\b|\bmfa\b)/i;
 const CAPTCHA_TEXT_PATTERN = /(?:captcha|i'?m not a robot|unusual traffic|verify you are human)/i;
 const CONSENT_TEXT_PATTERN = /(?:consent required|accept (?:the )?terms to continue|review and accept)/i;
 
@@ -144,10 +157,33 @@ function signalFrom(
 export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
   detect(input: DetectAuthBoundaryInput): AuthBoundaryDetectionResult {
     const diagnostics: Record<string, unknown>[] = [];
-
-    // 1. Navigation ended on an unauthorized status.
     const navigation = input.navigation;
     const navPreview = navigation ? boundedSanitizeUrl(navigation.finalUrlPreview) : undefined;
+
+    // Bounded page-text slice, computed once and shared by every text rule below.
+    let text: string | undefined;
+    if (typeof input.pageTextPreview === 'string' && input.pageTextPreview.length > 0) {
+      text = input.pageTextPreview.slice(0, PAGE_TEXT_SCAN_LIMIT);
+      if (input.pageTextPreview.length > PAGE_TEXT_SCAN_LIMIT) {
+        diagnostics.push({ level: 'info', code: 'auth-boundary-page-text-truncated', scanned: PAGE_TEXT_SCAN_LIMIT });
+      }
+    }
+
+    // 1. EXPLICIT page-challenge text wins over a generic 401/403: an anti-bot CAPTCHA page
+    //    (or an MFA prompt) commonly returns 403, and classifying it as `login-required`
+    //    would tell the human to log in instead of solving the visible challenge. CAPTCHA is
+    //    checked before MFA because "enter the captcha verification code" matches the generic
+    //    `verification code` MFA phrase too, and the specific kind must win.
+    if (text !== undefined) {
+      if (CAPTCHA_TEXT_PATTERN.test(text)) {
+        return { signal: signalFrom('captcha-required', 0.75, 'page-snapshot', 'captcha-page-marker', navPreview, undefined), diagnostics };
+      }
+      if (MFA_TEXT_PATTERN.test(text)) {
+        return { signal: signalFrom('mfa-required', 0.75, 'page-snapshot', 'mfa-page-marker', navPreview, undefined), diagnostics };
+      }
+    }
+
+    // 2. Navigation ended on an unauthorized status.
     if (navigation && typeof navigation.status === 'number' && UNAUTHORIZED_STATUSES.has(navigation.status)) {
       return {
         signal: signalFrom('login-required', 0.9, 'navigation', 'navigation-unauthorized-status', navPreview, {
@@ -157,7 +193,7 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
       };
     }
 
-    // 2. A captured network observation carries an unauthorized response status.
+    // 3. A captured network observation carries an unauthorized response status.
     const observations = Array.isArray(input.observations) ? input.observations : [];
     if (observations.length > OBSERVATION_SCAN_LIMIT) {
       diagnostics.push({ level: 'info', code: 'auth-boundary-observations-truncated', scanned: OBSERVATION_SCAN_LIMIT });
@@ -175,35 +211,22 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
       }
     }
 
-    // 3. Navigation landed on a login-looking path (tested on the SANITIZED preview).
-    if (navPreview !== undefined && LOGIN_PATH_PATTERN.test(navPreview)) {
+    // 4. Navigation landed on a login-looking PATH (pathname only — see LOGIN_PATH_PATTERN).
+    if (navPreview !== undefined && LOGIN_PATH_PATTERN.test(pathnameOf(navPreview))) {
       return {
         signal: signalFrom('login-required', 0.6, 'navigation', 'login-redirect-url', navPreview, undefined),
         diagnostics,
       };
     }
 
-    // 4. Page-text markers (bounded slice; matched marker is reported as a CODE only).
-    if (typeof input.pageTextPreview === 'string' && input.pageTextPreview.length > 0) {
-      const text = input.pageTextPreview.slice(0, PAGE_TEXT_SCAN_LIMIT);
-      if (input.pageTextPreview.length > PAGE_TEXT_SCAN_LIMIT) {
-        diagnostics.push({ level: 'info', code: 'auth-boundary-page-text-truncated', scanned: PAGE_TEXT_SCAN_LIMIT });
-      }
-      // CAPTCHA before MFA: an explicit captcha page ("enter the captcha verification
-      // code") also matches the generic `verification code` MFA phrase, so the specific
-      // classification must win or the human is told to do the wrong thing.
-      if (CAPTCHA_TEXT_PATTERN.test(text)) {
-        return { signal: signalFrom('captcha-required', 0.7, 'page-snapshot', 'captcha-page-marker', navPreview, undefined), diagnostics };
-      }
-      if (MFA_TEXT_PATTERN.test(text)) {
-        return { signal: signalFrom('mfa-required', 0.7, 'page-snapshot', 'mfa-page-marker', navPreview, undefined), diagnostics };
-      }
+    // 5. Remaining page-text rules: consent, then a corroborated login FORM, then weak markers.
+    if (text !== undefined) {
       if (CONSENT_TEXT_PATTERN.test(text)) {
         return { signal: signalFrom('consent-required', 0.6, 'page-snapshot', 'consent-page-marker', navPreview, undefined), diagnostics };
       }
       // Login FORM: count DISTINCT markers. >= 2 is a conservative login signal; exactly
       // 1 is a lone generic word -> record, don't interrupt the run.
-      const loginMarkerCount = LOGIN_FORM_MARKERS.reduce((n, pattern) => (pattern.test(text) ? n + 1 : n), 0);
+      const loginMarkerCount = LOGIN_FORM_MARKERS.reduce((n, pattern) => (pattern.test(text as string) ? n + 1 : n), 0);
       if (loginMarkerCount >= 2) {
         return { signal: signalFrom('login-required', 0.6, 'page-snapshot', 'login-form-markers', navPreview, { markerCount: loginMarkerCount }), diagnostics };
       }

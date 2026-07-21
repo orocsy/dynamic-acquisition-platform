@@ -163,3 +163,35 @@ test('overlapping password phrasing counts as a single marker', () => {
   // a genuine form (sign-in + password) is still caught
   assert.equal(detector.detect({ pageTextPreview: 'Sign in. Forgot your password?' }).signal.kind, 'login-required');
 });
+
+// Codex re-review of PR #4 round 3 (E4): explicit page-challenge text must override a
+// generic 401/403 -- an anti-bot CAPTCHA / MFA page commonly returns 403, and telling the
+// human to "log in" instead of solving the visible challenge is wrong.
+test('explicit challenge text overrides a generic unauthorized status', () => {
+  assert.equal(detector.detect({ navigation: nav({ status: 403 }), pageTextPreview: 'Please verify you are human' }).signal.kind, 'captcha-required');
+  assert.equal(detector.detect({ navigation: nav({ status: 401 }), pageTextPreview: 'Enter the one-time code we sent you' }).signal.kind, 'mfa-required');
+  assert.equal(
+    detector.detect({ observations: [{ id: 'o', runId: 'r', source: 'cdp', capturedAt: 't', request: { url: 'https://h/x', method: 'GET' }, response: { status: 403 } }], pageTextPreview: 'Complete the CAPTCHA' }).signal.kind,
+    'captcha-required',
+  );
+  // a bare 401/403 with no challenge text is still login-required
+  assert.equal(detector.detect({ navigation: nav({ status: 401 }) }).signal.kind, 'login-required');
+});
+
+// Codex re-review of PR #4 round 3 (E3): literal OTP/MFA acronyms are recognized.
+test('literal OTP and MFA acronyms are recognized as mfa', () => {
+  assert.equal(detector.detect({ pageTextPreview: 'Enter OTP to continue' }).signal.kind, 'mfa-required');
+  assert.equal(detector.detect({ pageTextPreview: 'MFA required for this account' }).signal.kind, 'mfa-required');
+  // a word merely CONTAINING the letters is not matched (bounded)
+  assert.equal(detector.detect({ pageTextPreview: 'adoption and cryptography topics' }).signal, undefined);
+});
+
+// Codex re-review of PR #4 round 3 (E2): the login-path rule tests the PATHNAME only, so a
+// single-label host that is itself a marker word does not falsely pause the run.
+test('a marker-word host does not trigger the login-path rule', () => {
+  assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: 'https://auth/dashboard' }) }).signal, undefined);
+  assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: 'https://login/account' }) }).signal, undefined);
+  // a genuine login PATH still signals
+  assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: 'https://app.example.com/sso/authorize' }) }).signal.kind, 'login-required');
+  assert.equal(detector.detect({ navigation: nav({ finalUrlPreview: '/login/callback' }) }).signal.kind, 'login-required');
+});

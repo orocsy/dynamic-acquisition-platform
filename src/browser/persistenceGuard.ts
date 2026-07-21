@@ -147,7 +147,9 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     // (`%3B`=`;`, `%26`=`&`, `%3F`=`?`, `%23`=`#`) a server decodes before reading: they live
     // in `pathname`, not `search`, so a `;jsessionid=`/`%3Fcode=` redirect URL would
     // otherwise persist a live session id or auth code in a checkpoint preview.
-    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23/i)[0];
+    // `%3a` included: an encoded colon in an ABSOLUTE path re-opens the smuggle once a
+    // consumer decodes it (`https://app.example.com/http%3a//127.0.0.1%3a9222/...`).
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23|%3a/i)[0];
     return parsed.toString();
   } catch {
     // Not an absolute URL. Keep ONLY a clean relative path (single leading slash,
@@ -157,11 +159,13 @@ export function sanitizeUrlPreview(value: string | undefined): string | undefine
     // `<NUL>//host`, `<ZWSP>//host`) — all can carry a raw host:port endpoint and
     // are not explicit http(s) URLs. A `startsWith('//')` test misses every smuggled
     // variant, so allow-list the safe shape instead of deny-listing.
-    // A relative path with a percent-encoded query/fragment/param delimiter (`%3B`/`%26`/
-    // `%3F`/`%23`) would persist a secret a consumer decodes -> drop it.
-    if (/%(?:3[bf]|26|23)/i.test(value)) return undefined;
+    // A relative path with a percent-encoded query/fragment/param/colon delimiter (`%3B`/
+    // `%26`/`%3F`/`%23`/`%3A`) would persist a secret a consumer decodes -> drop it.
+    if (/%(?:3[abf]|26|23)/i.test(value)) return undefined;
     const path = value.split(/[?#;&]/, 1)[0];
-    return /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/.test(path) ? path : undefined;
+    // No `:` (0x3a) in a relative preview: a colon lets a whole absolute URL hide inside it
+    // (`/http://127.0.0.1:9222/...`), same class as browserObservation's CLEAN_RELATIVE_PATH.
+    return /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x39\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/.test(path) ? path : undefined;
   }
 }
 

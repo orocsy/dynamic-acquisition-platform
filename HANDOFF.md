@@ -1,7 +1,59 @@
-# Handoff — Phase 3.3 complete (hardening + codex + adversarial review applied), ready for 3.4
+# Handoff — Phase 3.4 implemented (PR #3), codex loop in progress
 
 Snapshot for picking this up in a fresh session (e.g. Claude Code). Read this
 first, then `docs/phase3-low-level-design.md` for the slice you're building.
+
+## 2026-07-14 update (supersedes "Current state" below where they conflict)
+
+- **Phase 3.4 (network capture → evidence bridge) is IMPLEMENTED** on branch
+  `phase3.4-network-evidence` (PR #3). Codex re-review rounds 1–4 were fixed and
+  pushed on 2026-06-09. Round 5 (2026-06-19, 7 P1 bridge findings: credential-like
+  observation ids, MIME params, query-name recheck, method token, URL re-validation
+  in the mapper, non-string header previews in the session, diagnostic-code
+  allow-list in the flow) is fixed, regression-tested (+8 tests), and pushed
+  2026-07-14. Round 6 (2026-07-15, 4 P2 findings — converging 7→4, P1→P2) fixed the
+  mapper-vs-session asymmetry (method token + MIME base now enforced at the GATE /
+  session store via shared helpers in `browserObservation.ts`, so
+  `stop()`/`listObservations()` can't return what the mapper would drop), excluded
+  `:` from the relative-path allow-list (`/http://127.0.0.1:9222/…` smuggling), and
+  added a camel-boundary view to the credential-keyword denylist
+  (`accessToken_abc123`; NOTE: `run_csrfDefense`-style camel-glued markers are now
+  rejected at the `isOpaqueBrowserRef` level — ref PARTS stay structural-only, so
+  run/daemon ids are unaffected). Round 7 (2026-07-15, 3 P2 — converging 7→4→3)
+  refined round 6: `%3A` added to the encoded-delimiter rejection (all four sites,
+  incl. the UNFLAGGED `persistenceGuard` sibling whose relative pattern also still
+  allowed a literal colon), the method check became a FIXED allow-list (GET/HEAD/
+  POST/PUT/DELETE/PATCH/OPTIONS/TRACE/CONNECT, case-insensitive — an all-letter
+  `SecretToken` no longer passes), and the camel-boundary denylist view also splits
+  acronym→Word boundaries (`clientSECRETValue`, `run_CSRFDefense`). Round 8
+  (2026-07-15, 4 P2) closed the `%3A` gap in the ABSOLUTE try-branches (header
+  sanitizer + `sanitizeUrlPreview` pathname splits), added an encoded-scheme
+  alternative to the diagnostics risky-pattern (`http%3a//…`), and bounded the
+  method length before uppercasing. Round 9 (2026-07-15) returned ZERO findings
+  ("Didn't find any major issues", reviewed commit fe6a9a9) — the loop converged
+  7→4→3→4→0. Tests: 246 pass / 0 fail. **PR #3 is READY TO MERGE (user action —
+  agent merge was permission-gated); after merge, next slice is Phase 3.5.**
+  (Ops note: codex posts a ZERO-findings result as an ISSUE comment, not a PR
+  review — poll issues/comments too when watching for it.)
+- **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
+  a structural + credential-keyword denylist; a keyword-free random secret used AS
+  an id is indistinguishable from a legit opaque id. If codex re-flags this, the
+  by-construction fix is session-side id minting (mirror `mintPageTargetRef`).
+- **Observation ids follow the surrogate-session-id rule, not the ref-part rule:**
+  they persist standalone (evidence `source.ref`, diagnostics `entryId`), so a
+  separator-delimited credential marker (`obs-123_token_req`) is rejected even
+  though round 10 keeps such markers legal in daemonId/runId ref parts.
+- **⚠️ Local FS hazard (this machine):** the Desktop working copy sits on a
+  cloud-evicting filesystem; with the disk at ~98% macOS made hundreds of files
+  (incl. `.git/`, `node_modules/`, most `test/*.js`, `package-lock.json`)
+  **dataless**, and rematerialization hangs. Symptoms: `git status`/`log`/`diff`
+  and `tsc` hang forever, and a session-start "clean" git status was FALSE (the
+  round-5 fixes sat uncommitted for weeks). Workaround that works: clone fresh
+  from GitHub into a local-disk path, overlay the readable (= materialized =
+  possibly-modified) files, build/test/commit/push there. A dataless file cannot
+  hold local modifications, so its content is always recoverable from origin.
+  Fix the root cause by freeing disk space, then let the Desktop repo
+  `git fetch && git reset --keep origin/phase3.4-network-evidence`.
 
 ## What this project is
 

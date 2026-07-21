@@ -1,5 +1,5 @@
 import type { BrowserObservationId, PageTargetRef } from './types';
-import { isPageTargetRef } from './browserRef';
+import { isOpaqueBrowserRef, isPageTargetRef, isSafeBrowserRefPart } from './browserRef';
 import { isLoopbackHost } from './daemonClient';
 
 export type BrowserObservationSource = 'cdp' | 'playwright' | 'daemon-fixture';
@@ -32,6 +32,9 @@ export type BrowserObservation = {
     headersPreview?: Record<string, string>;
     resourceType?: string;
     bodyShape?: BrowserObservationBodyShape;
+    // Query param NAMES only (the sanitized `url` strips the query string). Carried so the
+    // network->evidence bridge preserves names without values; validated as value-less.
+    queryParamNames?: string[];
   };
   response?: {
     status?: number;
@@ -54,11 +57,16 @@ const SENSITIVE_HEADER_PATTERN = /(?:authorization|cookie|set-cookie|api[-_]?key
 // `new URL` resolves via `\\`==`/`). Shared by the header check and the request.url
 // invariant so both enforce one policy.
 const CLEAN_ABSOLUTE_URL = /^https?:\/\/[^@/?#;&\s\x5c\x00-\x1f]+(?:\/[^?#;&\s\x5c\x00-\x1f]*)?$/i;
-const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x3a\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
-function isSanitizedUrlField(value: string): boolean {
-  // Reject any percent-encoded query/fragment/param delimiter (`%3B`/`%26`/`%3F`/`%23`) a
-  // consumer would decode into a secret.
-  if (/%(?:3[bf]|26|23)/i.test(value)) return false;
+// No `:` (0x3a) in a relative path: a colon lets a whole absolute URL hide inside it
+// (`/http://127.0.0.1:9222/devtools/...`), smuggling a scheme/port/loopback endpoint past
+// the absolute-URL checks by prefixing `/`. Rare legit colon segments (`/v1/users:batch`)
+// are dropped as the cost of closing the class.
+const CLEAN_RELATIVE_PATH = /^\/(?!\/)[\x21-\x22\x24-\x25\x27-\x39\x3c-\x3e\x40-\x5b\x5d-\x7e]*$/;
+export function isSanitizedUrlField(value: string): boolean {
+  // Reject any percent-encoded query/fragment/param/colon delimiter (`%3B`/`%26`/`%3F`/
+  // `%23`/`%3A`) a consumer would decode into a secret -- `%3A` because a decoded colon
+  // re-opens the relative-path scheme smuggle (`/http%3a//127.0.0.1%3a9222/...`).
+  if (/%(?:3[abf]|26|23)/i.test(value)) return false;
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -133,15 +141,18 @@ function sanitizeHeaderUrlValue(value: string): string {
     }
     // Drop RFC-3986 path parameters too (`;jsessionid=…`, stray `&…`) — they sit in
     // pathname, not search, so a session id in a redirect Location would survive.
-    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23/i)[0];
+    // `%3a` included: an encoded colon in an ABSOLUTE path re-opens the smuggle once a
+    // consumer decodes it (`https://app.example.com/http%3a//127.0.0.1%3a9222/...`).
+    parsed.pathname = parsed.pathname.split(/[;&]|%3b|%26|%3f|%23|%3a/i)[0];
     return parsed.toString();
   } catch {
     // Keep ONLY a clean relative path; drop scheme-relative or whitespace/tab/control/
     // zero-width-smuggled host-bearing forms (a URL parser normalizes `/<tab>/host` to
     // `//host`). A relative path has no host:port to leak. See sanitizeUrlPreview.
-    // a relative path with a percent-encoded query/fragment/param delimiter would survive
-    // (CLEAN_RELATIVE_PATH permits `%`) and a consumer would decode it -> redact it.
-    if (/%(?:3[bf]|26|23)/i.test(value)) return REDACTED;
+    // a relative path with a percent-encoded query/fragment/param/colon delimiter would
+    // survive (CLEAN_RELATIVE_PATH permits `%`) and a consumer would decode it -> redact it
+    // (`%3A` re-opens the relative-path scheme smuggle).
+    if (/%(?:3[abf]|26|23)/i.test(value)) return REDACTED;
     const path = value.split(/[?#;&]/, 1)[0];
     return CLEAN_RELATIVE_PATH.test(path) ? path : REDACTED;
   }
@@ -237,14 +248,81 @@ function assertHeaderPreviewSafe(headers: Record<string, string> | undefined, pa
   }
 }
 
+// A FIXED allow-list of HTTP methods, not a shape check: an all-letter token (`SecretToken`)
+// would satisfy any alphabetic pattern, and the point of this gate is to keep
+// source-controlled free-form text out of persisted observations. Exact known values only
+// (the round-9 ref-key allow-list precedent); extend deliberately if a capture source ever
+// legitimately emits more (e.g. WebDAV). Case-insensitive: CDP reports canonical uppercase,
+// fixtures may not. Shared by the observation gate (so an unsafe method never survives
+// stop()/listObservations()) and the mapper (defense for observations that bypassed the gate).
+const HTTP_METHOD_ALLOWLIST = new Set(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'TRACE', 'CONNECT']);
+// Bound the length BEFORE uppercasing: an untrusted source can supply a huge method string,
+// and duplicating it just to reject it is avoidable CPU/memory pressure during stop()/mapping.
+const HTTP_METHOD_MAX_LENGTH = Math.max(...[...HTTP_METHOD_ALLOWLIST].map((m) => m.length));
+export function isHttpMethodToken(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= HTTP_METHOD_MAX_LENGTH && HTTP_METHOD_ALLOWLIST.has(value.toUpperCase());
+}
+
+// The base `type/subtype` of a MIME type, with any parameters (`; charset=...`) STRIPPED: a
+// parameter is free-form and could carry a secret. SANITIZE disposal (lossy preview), not
+// REJECT: the base is informational, so dropping the parameters is fine. Shared by the
+// session store (construction) and the mapper (defense for un-gated observations).
+const MIME_TYPE_BASE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/i;
+export function cleanMimeType(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 256) return undefined;
+  const base = value.split(';', 1)[0].trim();
+  return MIME_TYPE_BASE_PATTERN.test(base) ? base : undefined;
+}
+
+const CLEAN_QUERY_PARAM_NAME = /^[^\s%=&?#/\\\p{Cc}]+$/u;
+
+// A single value-less query param NAME token (exported so the bridge can re-validate
+// source-controlled names from an untrusted session before forwarding them to evidence).
+export function isSafeQueryParamName(name: unknown): name is string {
+  return typeof name === 'string' && name.length > 0 && name.length <= 256 && CLEAN_QUERY_PARAM_NAME.test(name);
+}
+
+function assertQueryParamNamesSafe(names: unknown): void {
+  if (names === undefined) return;
+  // Must be an ARRAY of clean, value-LESS name tokens. A non-array (e.g. a bare string from
+  // daemon JSON) would otherwise iterate per-character below, pass, and then make the mapper's
+  // `names.map(...)` throw rather than producing a safe skip. Each name: non-empty, bounded,
+  // and free of the value separator `=`, the param/url delimiters `&`/`?`/`#`, a slash/
+  // backslash, a percent (encoded delimiter), whitespace, and control chars.
+  if (!Array.isArray(names)) {
+    throw new Error('browser observation request.queryParamNames must be an array of clean value-less name tokens');
+  }
+  for (const name of names) {
+    if (!isSafeQueryParamName(name)) {
+      throw new Error('browser observation request.queryParamNames must be clean value-less name tokens');
+    }
+  }
+}
+
 export function assertSafeBrowserObservation(observation: BrowserObservation): void {
   assertJsonSafe(observation, 'observation');
+  // The id is copied into the mapped entry id -> evidence `source.ref` and runtime
+  // `entryId` diagnostics, so it must be an opaque STRING token, never a raw URL/endpoint/
+  // secret a buggy source might supply. Require an actual string (not String()-coerced): a
+  // non-string id (e.g. `["sk_live_..."]`) would pass a coerced check yet be stored/returned
+  // verbatim by pickSafeObservation. Structural-only (descriptive ids OK).
+  if (typeof observation.id !== 'string' || !isSafeBrowserRefPart(observation.id) || !isOpaqueBrowserRef(observation.id)) {
+    throw new Error('browser observation id must be an opaque, credential-free string token');
+  }
   // request.url and pageTargetRef are persisted alongside the header previews, so the
   // invariant must validate them too: a prebuilt observation must not carry a raw
   // query/userinfo/endpoint in request.url, nor a non-page-shaped pageTargetRef.
   if (observation.request?.url !== undefined && !isSanitizedUrlField(observation.request.url)) {
     throw new Error('browser observation request.url must be a sanitized http(s) URL or relative path');
   }
+  // A non-string method (malformed daemon JSON) would crash the normalizer's `.toUpperCase()`
+  // downstream, and a free-form method string could carry credential text into
+  // stop()/listObservations() results (pickSafeObservation copies it verbatim) -- so the gate
+  // requires a real HTTP method TOKEN, not merely a non-empty string.
+  if (observation.request !== undefined && !isHttpMethodToken(observation.request.method)) {
+    throw new Error('browser observation request.method must be a valid HTTP method token');
+  }
+  assertQueryParamNamesSafe(observation.request?.queryParamNames);
   if (observation.pageTargetRef !== undefined && !isPageTargetRef(observation.pageTargetRef)) {
     throw new Error('browser observation pageTargetRef must be an opaque page target ref (page:<id>)');
   }

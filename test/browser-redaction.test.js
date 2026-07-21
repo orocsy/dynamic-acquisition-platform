@@ -393,7 +393,6 @@ test('isOpaqueBrowserRef accepts legit ids whose keyword is a prefix of a longer
   for (const ok of [
     'run_tokenizer_eval',
     'run_jwtable',
-    'run_csrfDefense',
     'daemon_secretary_1',
     'run_signatures_index',
     'run_credentialing_v2',
@@ -401,6 +400,13 @@ test('isOpaqueBrowserRef accepts legit ids whose keyword is a prefix of a longer
     assert.equal(isOpaqueBrowserRef(ok), true, `expected ${ok} accepted`);
   // a separator-delimited secret marker is still rejected (security preserved)
   for (const bad of ['run_token_DEADBEEF', 'session:access_token_ABCD', 'd-jwt-RAWVAL', 'x_csrf_RAWVAL'])
+    assert.equal(isOpaqueBrowserRef(bad), false, `expected ${bad} rejected`);
+  // Codex re-review of PR #3 (round 6): a camelCase boundary now counts as a separator
+  // (`accessToken_x` must not dodge the denylist), so a camel-delimited marker like
+  // `run_csrfDefense` (csrf + Defense) is REJECTED at this level -- unlike `tokenizer`,
+  // where the marker is glued inside one lowercase word. Runtime daemonId/runId parts are
+  // structural-only (round 10) and unaffected: session registration still accepts them.
+  for (const bad of ['run_csrfDefense', 'accessToken_abc123', 'sessionApiKey'])
     assert.equal(isOpaqueBrowserRef(bad), false, `expected ${bad} rejected`);
 });
 
@@ -620,4 +626,14 @@ test('redactBrowserDiagnosticData redacts sig + camelCase credential keys, keeps
   assert.equal(redactBrowserDiagnosticData({ daemonId: 'daemon_local_1' }).daemonId, 'daemon_local_1');
   assert.equal(redactBrowserDiagnosticData({ pageTargetRef: 'page:t-1' }).pageTargetRef, 'page:t-1');
   assert.equal(redactBrowserDiagnosticData({ targetRef: 'page:t-2' }).targetRef, 'page:t-2');
+});
+
+// Codex re-review of PR #3 (round 8): an ENCODED scheme delimiter (`http%3a//...`) has no
+// literal `://`, no leading slash, and no later encoded delimiter -- it must still count as
+// URL-bearing and redact the whole diagnostic string.
+test('diagnostics redact an encoded-colon scheme endpoint', () => {
+  assert.equal(redactBrowserDiagnosticData({ note: 'redirect to http%3a//127.0.0.1:9222/devtools/browser/RAW' }).note, '[redacted]');
+  assert.equal(redactBrowserDiagnosticData({ note: 'wss%3A//10.0.0.5/devtools' }).note, '[redacted]');
+  // plain prose with no URL-ish token is still kept
+  assert.equal(redactBrowserDiagnosticData({ note: 'retry scheduled after backoff' }).note, 'retry scheduled after backoff');
 });

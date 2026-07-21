@@ -62,7 +62,7 @@ test('bridge rejects a transparent or unsafe browserSessionRef without echoing i
       () =>
         requestHumanInterventionFromBrowser(
           { coordinator },
-          { runId: 'run_x', expectedVersion: 2, signal: loginSignal(), browserSessionRef: ref, nextStepId: 'resume-auth' },
+          { runId: 'run_x', expectedVersion: 2, signal: loginSignal(), browserSessionRef: ref },
         ),
       (err) => {
         assert.equal(String(err.message).includes('XYZREF'), false, 'ref must not be echoed');
@@ -88,7 +88,6 @@ test('bridge drops an unknown detector reason and sanitizes the url before persi
       expectedVersion: 2,
       signal: loginSignal({ reason: 'sk-live-SECRETREASON', urlPreview: 'https://idp.example.com/cb?code=SECRETCODE' }),
       browserSessionRef: 'session:abc-123',
-      nextStepId: 'resume-auth',
     },
   );
   const sent = captured[0];
@@ -103,7 +102,7 @@ test('bridge rejects an unknown signal kind without echoing it', async () => {
     () =>
       requestHumanInterventionFromBrowser(
         { coordinator },
-        { runId: 'run_x', expectedVersion: 2, signal: loginSignal({ kind: 'give-me-your-sk-live-KEY' }), browserSessionRef: 'session:abc-123', nextStepId: 'n' },
+        { runId: 'run_x', expectedVersion: 2, signal: loginSignal({ kind: 'give-me-your-sk-live-KEY' }), browserSessionRef: 'session:abc-123' },
       ),
     (err) => {
       assert.equal(String(err.message).includes('sk-live'), false);
@@ -124,7 +123,6 @@ test('bridge creates waiting_for_human through the real coordinator and returns 
       expectedVersion: 2,
       signal: loginSignal({ reason: 'navigation-unauthorized-status' }),
       browserSessionRef: 'session:abc-123',
-      nextStepId: 'resume-after-login',
       now: FIXED_NOW,
     },
   );
@@ -134,6 +132,7 @@ test('bridge creates waiting_for_human through the real coordinator and returns 
   assert.equal(result.checkpoint.browserSessionRef, 'session:abc-123');
   assert.equal(result.resumeToken, FIXED_TOKEN); // returned ONCE, here only
   assert.equal(result.request.kind, 'login-required');
+  assert.equal(result.checkpoint.nextStepId, 'auth_state_recheck'); // C3: the runtime's fixed resume-entry step
   assert.ok(result.request.reason.includes('navigation-unauthorized-status')); // known reason forwarded
   assert.deepEqual([...result.request.instructions], buildHumanInstructions('login-required'));
 
@@ -151,7 +150,7 @@ test('bridge marks the page target stale after recording, and a markStale failur
   const staleCalls = [];
   const result = await requestHumanInterventionFromBrowser(
     { coordinator, pageTargets: { markStale: async (ref, reason) => { staleCalls.push([ref, reason]); return {}; } } },
-    { runId, expectedVersion: 2, signal: loginSignal(), browserSessionRef: 'session:abc-123', nextStepId: 'n', pageTargetRef: 'page:t-1' },
+    { runId, expectedVersion: 2, signal: loginSignal(), browserSessionRef: 'session:abc-123', pageTargetRef: 'page:t-1' },
   );
   assert.deepEqual(staleCalls, [['page:t-1', 'auth-boundary-intervention']]);
   assert.equal(result.resumeToken, FIXED_TOKEN);
@@ -160,8 +159,92 @@ test('bridge marks the page target stale after recording, and a markStale failur
   const runId2 = await runningRun(c2, 'run_bridge_003');
   const result2 = await requestHumanInterventionFromBrowser(
     { coordinator: c2, pageTargets: { markStale: async () => { throw new Error('target gone'); } } },
-    { runId: runId2, expectedVersion: 2, signal: loginSignal(), browserSessionRef: 'session:abc-123', nextStepId: 'n', pageTargetRef: 'page:t-1' },
+    { runId: runId2, expectedVersion: 2, signal: loginSignal(), browserSessionRef: 'session:abc-123', pageTargetRef: 'page:t-1' },
   );
   assert.equal(result2.resumeToken, FIXED_TOKEN); // still returned despite the stale failure
   assert.equal(result2.checkpoint.status, 'waiting_for_human');
+});
+
+// Codex re-review of PR #4 (C3): the runtime's resumeRun asserts the pending
+// intervention's nextStepId === 'auth_state_recheck', else it PERMANENTLY fails the run
+// at resume. A bridge-created intervention must therefore be resumable end-to-end.
+test('a bridge-created intervention resumes end-to-end (C3)', async () => {
+  const { coordinator } = makeCoordinator();
+  const runId = await runningRun(coordinator, 'run_bridge_resume');
+  const requested = await requestHumanInterventionFromBrowser(
+    { coordinator },
+    { runId, expectedVersion: 2, signal: loginSignal(), browserSessionRef: 'session:abc-123', now: FIXED_NOW },
+  );
+  assert.equal(requested.checkpoint.nextStepId, 'auth_state_recheck');
+
+  await coordinator.completeHumanIntervention({
+    runId,
+    requestId: requested.request.id,
+    expectedVersion: requested.checkpoint.version,
+    resumeToken: requested.resumeToken,
+    result: 'completed',
+    completedBy: 'human',
+    completedAt: '2026-07-15T00:05:00.000Z',
+  });
+  const resumed = await coordinator.resumeRun({
+    runId,
+    expectedVersion: requested.checkpoint.version + 1,
+    requestId: requested.request.id,
+    now: '2026-07-15T00:06:00.000Z',
+  });
+  assert.equal(resumed.status, 'running_after_resume');
+  assert.equal(resumed.phase, 'auth_state_recheck');
+});
+
+// Codex re-review of PR #4 (C3): a caller-supplied nextStepId other than the fixed
+// resume-entry step is rejected up front, so an un-resumable intervention is never created.
+test('bridge rejects a non-default nextStepId', async () => {
+  const { coordinator } = makeCoordinator();
+  const runId = await runningRun(coordinator, 'run_bridge_badstep');
+  await assert.rejects(
+    () =>
+      requestHumanInterventionFromBrowser(
+        { coordinator },
+        { runId, expectedVersion: 2, signal: loginSignal(), browserSessionRef: 'session:abc-123', nextStepId: 'discovering_network' },
+      ),
+    /nextStepId must be auth_state_recheck/,
+  );
+  // the explicit default value is accepted
+  const ok = await requestHumanInterventionFromBrowser(
+    { coordinator },
+    { runId, expectedVersion: 2, signal: loginSignal(), browserSessionRef: 'session:abc-123', nextStepId: 'auth_state_recheck' },
+  );
+  assert.equal(ok.checkpoint.nextStepId, 'auth_state_recheck');
+});
+
+// Codex re-review of PR #4 (C4): an untrusted urlPreview is length-bounded before new URL
+// parses it and before it is persisted.
+test('bridge drops an overlong urlPreview before sanitizing/persisting', async () => {
+  const captured = [];
+  const coordinator = { requestHumanIntervention: async (input) => { captured.push(input); return { checkpoint: {}, request: { id: 'x' }, resumeToken: 't' }; } };
+  const huge = 'https://app.example.com/' + 'a'.repeat(5000);
+  await requestHumanInterventionFromBrowser(
+    { coordinator },
+    { runId: 'r', expectedVersion: 2, signal: loginSignal({ urlPreview: huge }), browserSessionRef: 'session:abc-123' },
+  );
+  assert.equal('url' in captured[0], false); // overlong -> dropped, not persisted
+  // a normal-length preview is still kept
+  await requestHumanInterventionFromBrowser(
+    { coordinator },
+    { runId: 'r', expectedVersion: 2, signal: loginSignal({ urlPreview: 'https://app.example.com/account' }), browserSessionRef: 'session:abc-123' },
+  );
+  assert.equal(captured[1].url, 'https://app.example.com/account');
+});
+
+// Self-review (S1): the adapter is a trust boundary; a non-string browserSessionRef is
+// rejected with a clean error, not an incidental TypeError, and never echoed.
+test('bridge rejects a non-string browserSessionRef cleanly', async () => {
+  const coordinator = { requestHumanIntervention: async () => { throw new Error('should not reach coordinator'); } };
+  for (const ref of [undefined, 12345, ['session:x'], { toString: () => 'session:x' }]) {
+    await assert.rejects(
+      () => requestHumanInterventionFromBrowser({ coordinator }, { runId: 'r', expectedVersion: 2, signal: loginSignal(), browserSessionRef: ref }),
+      /browserSessionRef must be a string/,
+      JSON.stringify(ref),
+    );
+  }
 });

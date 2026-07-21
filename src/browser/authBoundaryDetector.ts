@@ -54,15 +54,25 @@ export interface AuthBoundaryDetector {
  * (browserRuntimeAdapter) forwards a reason into the persisted intervention record
  * ONLY when it is in this set (the KNOWN_CAPTURE_CODES precedent from the 3.4 flow) —
  * an unknown reason from a foreign detector is dropped, not regex-sanitized.
+ *
+ * The set is module-PRIVATE and reached only through `isKnownAuthBoundaryReason`.
+ * Exporting the mutable Set would let a consumer `KNOWN_AUTH_BOUNDARY_REASONS.add(...)`
+ * an untrusted reason before calling the bridge, defeating the fixed-vocabulary
+ * boundary (Object.freeze does NOT stop Set.add) — so we expose only a read predicate.
  */
-export const KNOWN_AUTH_BOUNDARY_REASONS = new Set<string>([
+const KNOWN_AUTH_BOUNDARY_REASON_SET: ReadonlySet<string> = new Set<string>([
   'navigation-unauthorized-status',
   'network-unauthorized-status',
   'login-redirect-url',
+  'login-form-markers',
   'mfa-page-marker',
   'captcha-page-marker',
   'consent-page-marker',
 ]);
+
+export function isKnownAuthBoundaryReason(value: unknown): value is string {
+  return typeof value === 'string' && KNOWN_AUTH_BOUNDARY_REASON_SET.has(value);
+}
 
 // Bound every untrusted input before scanning.
 const PAGE_TEXT_SCAN_LIMIT = 16_384;
@@ -79,7 +89,17 @@ const LOGIN_PATH_PATTERN = /\/(?:log[-_]?in|sign[-_]?in|sso|authorize|auth|oauth
 const MFA_TEXT_PATTERN = /(?:two[-\s]?factor|multi[-\s]?factor|verification code|one[-\s]?time (?:code|password)|authenticator app|\b2fa\b)/i;
 const CAPTCHA_TEXT_PATTERN = /(?:captcha|i'?m not a robot|unusual traffic|verify you are human)/i;
 const CONSENT_TEXT_PATTERN = /(?:consent required|accept (?:the )?terms to continue|review and accept)/i;
-const WEAK_TEXT_PATTERN = /(?:\blog ?in\b|\bsign ?in\b|\bverify\b|\bpassword\b)/i;
+
+// A login FORM (not a lone word): distinct corroborating markers. A single one is
+// WEAK (diagnostic only); TWO OR MORE distinct ones on a page are a conservative
+// login signal — this catches a login page that returns 200 on a non-login URL,
+// which the redirect/status rules miss (breakdown §3.5 "login-form signal").
+const LOGIN_FORM_MARKERS: readonly RegExp[] = [
+  /\b(?:sign[-\s]?in|log[-\s]?in)\b/i,
+  /\bpassword\b/i,
+  /\b(?:e-?mail|username)\b/i,
+  /\b(?:remember me|forgot (?:your )?password|keep me signed in)\b/i,
+];
 
 function clampConfidence(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -156,17 +176,25 @@ export class ConservativeAuthBoundaryDetector implements AuthBoundaryDetector {
       if (input.pageTextPreview.length > PAGE_TEXT_SCAN_LIMIT) {
         diagnostics.push({ level: 'info', code: 'auth-boundary-page-text-truncated', scanned: PAGE_TEXT_SCAN_LIMIT });
       }
-      if (MFA_TEXT_PATTERN.test(text)) {
-        return { signal: signalFrom('mfa-required', 0.7, 'page-snapshot', 'mfa-page-marker', navPreview, undefined), diagnostics };
-      }
+      // CAPTCHA before MFA: an explicit captcha page ("enter the captcha verification
+      // code") also matches the generic `verification code` MFA phrase, so the specific
+      // classification must win or the human is told to do the wrong thing.
       if (CAPTCHA_TEXT_PATTERN.test(text)) {
         return { signal: signalFrom('captcha-required', 0.7, 'page-snapshot', 'captcha-page-marker', navPreview, undefined), diagnostics };
+      }
+      if (MFA_TEXT_PATTERN.test(text)) {
+        return { signal: signalFrom('mfa-required', 0.7, 'page-snapshot', 'mfa-page-marker', navPreview, undefined), diagnostics };
       }
       if (CONSENT_TEXT_PATTERN.test(text)) {
         return { signal: signalFrom('consent-required', 0.6, 'page-snapshot', 'consent-page-marker', navPreview, undefined), diagnostics };
       }
-      if (WEAK_TEXT_PATTERN.test(text)) {
-        // A lone generic word is not enough to interrupt a run — record, don't signal.
+      // Login FORM: count DISTINCT markers. >= 2 is a conservative login signal; exactly
+      // 1 is a lone generic word -> record, don't interrupt the run.
+      const loginMarkerCount = LOGIN_FORM_MARKERS.reduce((n, pattern) => (pattern.test(text) ? n + 1 : n), 0);
+      if (loginMarkerCount >= 2) {
+        return { signal: signalFrom('login-required', 0.6, 'page-snapshot', 'login-form-markers', navPreview, { markerCount: loginMarkerCount }), diagnostics };
+      }
+      if (loginMarkerCount === 1) {
         diagnostics.push({ level: 'info', code: 'auth-boundary-weak-marker' });
       }
     }

@@ -3,8 +3,9 @@ import type {
   RuntimeCoordinatorRequestHumanInterventionResult,
 } from '../runtime';
 import type { HumanInterventionKind } from '../runtime';
+import { DEFAULT_RESUME_ENTRY_STEP_ID } from '../runtime';
 import type { BrowserAuthBoundaryKind, BrowserAuthBoundarySignal } from './authBoundaryDetector';
-import { KNOWN_AUTH_BOUNDARY_REASONS } from './authBoundaryDetector';
+import { isKnownAuthBoundaryReason } from './authBoundaryDetector';
 import type { PageTargetController } from './pageTargetController';
 import { guardSurrogateSessionId, sanitizeUrlPreview } from './persistenceGuard';
 
@@ -43,12 +44,25 @@ export type RequestHumanInterventionFromBrowserInput = {
   expectedVersion: number;
   signal: BrowserAuthBoundarySignal;
   browserSessionRef: string;
-  nextStepId: string;
+  /**
+   * OPTIONAL. The runtime fixes the resume-entry step: `RuntimeCoordinator.resumeRun`
+   * asserts the pending intervention's `nextStepId` equals `DEFAULT_RESUME_ENTRY_STEP_ID`
+   * (`auth_state_recheck`) and otherwise permanently fails the run at resume. So the
+   * bridge ALWAYS records that constant; a caller-supplied value is accepted only when
+   * it equals it (any other value is rejected up front, so an un-resumable intervention
+   * is never created).
+   */
+  nextStepId?: string;
   now?: string;
   /** When provided together with deps.pageTargets, the target is marked stale after
    *  the intervention is recorded. */
   pageTargetRef?: string;
 };
+
+// A foreign detector's urlPreview is untrusted; cap its length before `new URL` parses
+// it and before it is persisted, so a multi-megabyte pathname can't force large parsing/
+// allocation or land in a checkpoint (this slice's bounded-untrusted-input guarantee).
+const MAX_URL_PREVIEW_LENGTH = 2048;
 
 // Explicit table, not a cast: if either union changes shape, this is a type error
 // here rather than a silently mislabeled intervention.
@@ -95,20 +109,34 @@ export async function requestHumanInterventionFromBrowser(
     // A foreign detector's unknown kind must not be echoed (it could carry anything).
     throw new Error('browser auth boundary signal kind is not a known intervention kind');
   }
+  // This is a trust boundary (any detector): reject a non-string ref with a clean error
+  // rather than the incidental TypeError guardSurrogateSessionId's opacity check would
+  // throw on a non-string. Neither echoes the value.
+  if (typeof input.browserSessionRef !== 'string') {
+    throw new Error('browserSessionRef must be a string');
+  }
   // Throws BrowserPersistenceError (without echoing the value) on a transparent
   // daemon:...:session:... ref, a raw endpoint, or a credential-marker ref.
   const browserSessionRef = guardSurrogateSessionId('browserSessionRef', input.browserSessionRef);
-  if (typeof input.nextStepId !== 'string' || input.nextStepId.trim().length === 0) {
-    throw new Error('nextStepId must be a non-empty string');
+
+  // The runtime fixes the resume-entry step; record the constant and reject any other
+  // supplied value (see the field doc) so the intervention is always resumable.
+  if (input.nextStepId !== undefined && input.nextStepId !== DEFAULT_RESUME_ENTRY_STEP_ID) {
+    throw new Error(`nextStepId must be ${DEFAULT_RESUME_ENTRY_STEP_ID} (the runtime's fixed resume-entry step)`);
   }
+  const nextStepId = DEFAULT_RESUME_ENTRY_STEP_ID;
 
   // Reason: fixed composition + the detector's code ONLY when it is a known one.
-  const reason = KNOWN_AUTH_BOUNDARY_REASONS.has(signal.reason)
+  const reason = isKnownAuthBoundaryReason(signal.reason)
     ? `Browser auth boundary (${kind}): ${signal.reason}`
     : `Browser auth boundary (${kind})`;
 
-  // Url: an untrusted preview is re-sanitized; anything unsafe is dropped, not fixed.
-  const url = typeof signal.urlPreview === 'string' ? sanitizeUrlPreview(signal.urlPreview) : undefined;
+  // Url: bound the untrusted preview length, then re-sanitize; anything unsafe or
+  // overlong is dropped, not fixed.
+  const url =
+    typeof signal.urlPreview === 'string' && signal.urlPreview.length <= MAX_URL_PREVIEW_LENGTH
+      ? sanitizeUrlPreview(signal.urlPreview)
+      : undefined;
 
   const source = SIGNAL_SOURCES.has(signal.source) ? signal.source : 'manual-policy';
   const confidence =
@@ -122,7 +150,7 @@ export async function requestHumanInterventionFromBrowser(
     kind,
     reason,
     instructions: buildHumanInstructions(signal.kind),
-    nextStepId: input.nextStepId,
+    nextStepId,
     browserSessionRef,
     ...(url !== undefined ? { url } : {}),
     ...(input.now !== undefined ? { now: input.now } : {}),

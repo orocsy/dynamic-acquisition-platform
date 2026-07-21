@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { ConservativeAuthBoundaryDetector, KNOWN_AUTH_BOUNDARY_REASONS } = require('../dist/browser');
+const { ConservativeAuthBoundaryDetector, isKnownAuthBoundaryReason } = require('../dist/browser');
 
 const detector = new ConservativeAuthBoundaryDetector();
 
@@ -26,7 +26,7 @@ test('detector output never echoes page text, raw URLs, or header-like secrets',
   // the sanitized preview keeps host+path only
   assert.equal(result.signal.urlPreview, 'https://idp.example.com/login');
   // the reason is from the fixed vocabulary, never source text
-  assert.ok(KNOWN_AUTH_BOUNDARY_REASONS.has(result.signal.reason), result.signal.reason);
+  assert.ok(isKnownAuthBoundaryReason(result.signal.reason), result.signal.reason);
 });
 
 test('detector drops an unsafe (loopback/ws) navigation preview instead of emitting it', () => {
@@ -98,4 +98,34 @@ test('weak or ambiguous markers produce diagnostics only', () => {
   assert.ok(result.diagnostics.some((d) => d.code === 'auth-boundary-weak-marker'));
   // and the diagnostic never carries the text itself
   assert.equal(JSON.stringify(result).includes('recommendations'), false);
+});
+
+// Codex re-review of PR #4 (C1): a login page that returns 200 on a non-login URL (no
+// redirect, no 401) must still be caught via corroborating login-FORM markers -- a single
+// generic word stays WEAK (diagnostic only), two or more distinct markers signal login.
+test('multiple login-form markers on a 200 page create a login signal; one stays weak', () => {
+  const form = detector.detect({ pageTextPreview: 'Sign in\nEmail address\nPassword\nRemember me' });
+  assert.equal(form.signal.kind, 'login-required');
+  assert.equal(form.signal.source, 'page-snapshot');
+  assert.equal(form.signal.reason, 'login-form-markers');
+  assert.ok(form.signal.evidence.markerCount >= 2);
+
+  const lone = detector.detect({ pageTextPreview: 'Sign in to see more recommendations' });
+  assert.equal(lone.signal, undefined);
+  assert.ok(lone.diagnostics.some((d) => d.code === 'auth-boundary-weak-marker'));
+});
+
+// Codex re-review of PR #4 (C5): an explicit CAPTCHA page also matches the generic
+// `verification code` MFA phrase; the specific classification must win.
+test('explicit captcha wording is classified as captcha, not mfa', () => {
+  const result = detector.detect({ pageTextPreview: 'Enter the CAPTCHA verification code to continue' });
+  assert.equal(result.signal.kind, 'captcha-required');
+  assert.equal(result.signal.reason, 'captcha-page-marker');
+});
+
+// C1 output-safety: the login-form signal still emits no page-text fragment.
+test('login-form signal carries no page-text fragment', () => {
+  const result = detector.detect({ pageTextPreview: 'Sign in\nEmail SECRET_HANDLE\nPassword SECRET_PW' });
+  assert.equal(result.signal.kind, 'login-required');
+  assert.equal(JSON.stringify(result).includes('SECRET'), false);
 });

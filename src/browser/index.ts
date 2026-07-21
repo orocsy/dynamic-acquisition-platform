@@ -14,3 +14,5 @@ export * from './pageTargetErrors';
 export * from './navigationPolicy';
 export * from './pageTargetController';
 export * from './fakePageTargetController';
+export * from './authBoundaryDetector';
+export * from './browserRuntimeAdapter';

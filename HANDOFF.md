@@ -1,4 +1,4 @@
-# Handoff — Phase 3.4 implemented (PR #3), codex loop in progress
+# Handoff — Phase 3.4 merged; Phase 3.5 implemented (PR pending)
 
 Snapshot for picking this up in a fresh session (e.g. Claude Code). Read this
 first, then `docs/phase3-low-level-design.md` for the slice you're building.
@@ -35,6 +35,19 @@ first, then `docs/phase3-low-level-design.md` for the slice you're building.
   agent merge was permission-gated); after merge, next slice is Phase 3.5.**
   (Ops note: codex posts a ZERO-findings result as an ISSUE comment, not a PR
   review — poll issues/comments too when watching for it.)
+- **2026-07-21: PR #3 MERGED to main (e6ef1cd). Phase 3.5 (auth boundary →
+  human intervention bridge) implemented on `phase3.5-auth-intervention`:**
+  `src/browser/authBoundaryDetector.ts` (conservative detector; fixed
+  `KNOWN_AUTH_BOUNDARY_REASONS` vocabulary, sanitized previews, bounded scans,
+  weak markers → diagnostics only) and `src/browser/browserRuntimeAdapter.ts`
+  (`requestHumanInterventionFromBrowser`: surrogate-ref guard without echo,
+  explicit kind map, known-reason forwarding, fixed §8.6 instructions,
+  coordinator-backed `waiting_for_human`, once-only resume token never
+  stored/logged, optional post-record `markStale` whose failure never loses the
+  token). Tests 271/271 after codex review rounds 1-2 (6 + 4 findings fixed); independent probe green. NOTE: repo file naming stays
+  camelCase (user decision 2026-07-21, matching all existing src files + the
+  LLD) — a user-level kebab-case hook exists but is overridden for this repo.
+- **2026-07-21: PR #4 codex loop CONVERGED TO ZERO** (6 rounds, findings 5->4->4->3->1->0 on commits 52f85da,6ab006e-style per round; final clean on 280a2f6). Security-critical items landed early and are closed: **C3** (nextStepId must be auth_state_recheck or resumeRun permanently fails -- my tests had never exercised resume, which hid it) and **E1** (getter-backed signal TOCTOU -> snapshot every untrusted field once). Later rounds were conservative-detector accuracy (challenge-vs-status precedence, login-path URL shapes). 279 tests. READY TO MERGE; then Phase 3.6 (browser-backed resume auth recheck, LLD §9).
 - **Known accepted boundary (disclosed, not hidden):** the observation-id guard is
   a structural + credential-keyword denylist; a keyword-free random secret used AS
   an id is indistinguishable from a legit opaque id. If codex re-flags this, the

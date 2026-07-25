@@ -128,6 +128,17 @@ export class NotImplementedAuthStateProbe implements AuthStateProbe {
 
 export const DEFAULT_AUTH_RECHECK_TIMEOUT_MS = 30_000;
 
+// The fixed set of boundary kinds the detector may legitimately report. Used to allow-list the
+// value before it reaches a public recheck diagnostic (the AuthBoundaryDetector is injectable,
+// so a foreign one is untrusted — a secret-bearing `kind` must never be echoed).
+const KNOWN_AUTH_BOUNDARY_KINDS: ReadonlySet<string> = new Set<string>([
+  'login-required',
+  'mfa-required',
+  'consent-required',
+  'captcha-required',
+  'decision-required',
+]);
+
 const PROBE_TIMEOUT = Symbol('auth-recheck-probe-timeout');
 
 // Map a thrown probe error to a recheck failure code. A page-target `target-stale` error must
@@ -197,10 +208,16 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
       pageTextPreview: observed?.pageTextPreview,
     });
     if (detection.signal) {
-      // The page still presents an auth boundary. Report a value-free diagnostic (the signal
-      // KIND only, never its urlPreview/reason detail).
+      // The page still presents an auth boundary. Report a value-free diagnostic: the boundary
+      // KIND is copied ONLY when it is one of the fixed known kinds (the detector is injectable,
+      // so a foreign one could return a secret-bearing kind); otherwise the field is omitted.
+      const kind = detection.signal.kind;
       return authRecheckFailure('still-unauthorized', [
-        { level: 'info', code: 'auth-recheck-boundary-persists', boundaryKind: detection.signal.kind },
+        {
+          level: 'info',
+          code: 'auth-recheck-boundary-persists',
+          ...(KNOWN_AUTH_BOUNDARY_KINDS.has(kind) ? { boundaryKind: kind } : {}),
+        },
       ]);
     }
 

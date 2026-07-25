@@ -289,3 +289,79 @@ test('a non-boolean ok discriminator is treated as a failure, not success', asyn
     assert.equal(result.outcome, 'recheck-failed', `ok=${JSON.stringify(okValue)}`);
   }
 });
+
+// Codex re-review of PR #5 round 2 (I1): the checkpoint carries only the session ref, so a
+// caller-supplied page target from ANOTHER run/session is rejected via the registry BEFORE the
+// resume transition (retryable), not after (which would strand the run).
+test('a page target not owned by the session is rejected before transitioning', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const registry = { get: (sessionId) => (sessionId === 'session:abc-1' ? { daemonId: 'd', runId: 'run_ac_001', pageTargetRef: 'page:t-1' } : undefined) };
+  const rechecker = new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] });
+  await assert.rejects(
+    () => resumeBrowserRun(
+      { coordinator, rechecker, session: { start: async () => {}, stop: async () => ({ observations: [], diagnostics: [] }), listObservations: async () => [] }, sessionRegistry: registry },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:OTHER-RUN-TARGET', now: NOW },
+    ),
+    /does not own/,
+  );
+  // the run was NOT transitioned, so the registry-owned target still works
+  const ok = await resumeBrowserRun(
+    { coordinator, rechecker, session: await startedSession([safeObs('o1')]), sessionRegistry: registry },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', now: NOW },
+  );
+  assert.equal(ok.outcome, 'evidence-recorded');
+});
+
+// Codex re-review of PR #5 round 2 (I3): absence of a checkpoint-bound session is NOT
+// permission to adopt a caller-supplied one.
+test('a resume with no checkpoint-bound session fails terminally', async () => {
+  const { coordinator } = makeCoordinator();
+  const runId = 'run_no_session';
+  await coordinator.createRun({ runId, intentSnapshot: { target: { kind: 'url', value: 'https://example.com/account' } } });
+  await coordinator.markRunning({ runId, expectedVersion: 1, phase: 'auth_boundary_detected' });
+  const requested = await coordinator.requestHumanIntervention({ runId, expectedVersion: 2, kind: 'login-required', reason: 'x', instructions: ['y'], nextStepId: 'auth_state_recheck' });
+  const completed = await coordinator.completeHumanIntervention({ runId, requestId: requested.request.id, expectedVersion: 3, resumeToken: TOKEN, result: 'completed', completedBy: 'human', completedAt: DONE });
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session: { start: async () => {}, stop: async () => ({ observations: [], diagnostics: [] }), listObservations: async () => [] } },
+    { runId, expectedVersion: completed.checkpoint.version, requestId: requested.request.id, browserSessionRef: 'session:adopted', pageTargetRef: 'page:t-1', now: NOW },
+  );
+  assert.equal(result.outcome, 'recheck-failed');
+  assert.equal(result.recheckCode, 'session-mismatch');
+  assert.equal(result.checkpoint.status, 'failed');
+});
+
+// Codex re-review of PR #5 round 2 (I2): a throw AFTER confirmResumeAuthRecheck advanced the
+// version -> the terminal markFailed must use the LATEST version, else it is rejected/stranded.
+test('a throw after confirm still fails terminally (uses the latest version)', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const session = { start: async () => { throw new Error('start blew up after confirm'); }, stop: async () => ({ observations: [], diagnostics: [] }), listObservations: async () => [] };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', now: NOW },
+  );
+  assert.equal(result.outcome, 'recheck-failed');
+  assert.equal(result.recheckCode, 'recheck-error');
+  assert.equal(result.checkpoint.status, 'failed');
+});
+
+// Codex re-review of PR #5 round 2 (I5, I6): a discovery navigation runs inside the fresh
+// post-recheck window before capture, and evidence-recorded advances the completed step.
+test('discovery navigation runs in the fresh window and the completed step advances', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const order = [];
+  const source = { beginCapture: () => order.push('reset'), collect: async () => { order.push('collect'); return [safeObs('o1')]; } };
+  const session = new BrowserNetworkCaptureSession(source);
+  const navigations = [];
+  const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async (i) => { order.push('navigate'); navigations.push(i.url); return { ok: true, pageTargetRef: i.pageTargetRef, state: 'ready', diagnostics: [] }; } };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+  );
+  assert.equal(result.outcome, 'evidence-recorded');
+  assert.deepEqual(navigations, ['https://api.example.com/account']);
+  assert.deepEqual(order, ['reset', 'navigate', 'collect']);
+  assert.equal(result.checkpoint.lastCompletedStepId, 'discovering_network');
+});

@@ -132,3 +132,18 @@ test('detector-backed recheck enforces a probe deadline', async () => {
   assert.equal(r.code, 'recheck-timeout');
   assert.equal(r.diagnostics[0].code, 'auth-recheck-probe-timeout');
 });
+
+// Codex re-review of PR #5 round 2 (I4): a foreign detector's unknown/secret boundary kind must
+// NOT reach the public recheck diagnostic; only a known kind is copied, else the field is omitted.
+test('detector-backed recheck allowlists the boundary kind in diagnostics', async () => {
+  const foreignDetector = { detect: () => ({ signal: { kind: 'sk-live-SECRETKIND', confidence: 1, source: 'navigation', reason: 'x' }, diagnostics: [] }) };
+  const rechecker = new DetectorBackedAuthRechecker(probeOf({ navigation: { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status: 200 } }), foreignDetector);
+  const r = await rechecker.recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'still-unauthorized');
+  assert.equal('boundaryKind' in r.diagnostics[0], false);
+  assert.equal(JSON.stringify(r).includes('SECRETKIND'), false);
+  const known = { detect: () => ({ signal: { kind: 'mfa-required', confidence: 1, source: 'page-snapshot', reason: 'x' }, diagnostics: [] }) };
+  const r2 = await new DetectorBackedAuthRechecker(probeOf({ navigation: { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status: 200 } }), known).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r2.diagnostics[0].boundaryKind, 'mfa-required');
+});

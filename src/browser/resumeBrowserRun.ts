@@ -13,6 +13,7 @@ import { runBrowserNetworkCaptureFlow } from './browserCaptureFlow';
 import type { NetworkCaptureSession } from './networkCaptureSession';
 import type { NetworkEvidenceNormalizerInput, NetworkEvidenceNormalizerResult } from '../discovery/network/types';
 import type { PageTargetController } from './pageTargetController';
+import type { BrowserSessionRegistry } from './browserSessionRegistry';
 import type { BrowserDaemonRef, PageTargetRef } from './types';
 
 /**
@@ -51,10 +52,16 @@ export type ResumeBrowserRunDeps = {
   rechecker: BrowserAuthRechecker;
   session: NetworkCaptureSession;
   normalize?: (input: NetworkEvidenceNormalizerInput) => NetworkEvidenceNormalizerResult;
-  /** Optional; enables §9.5 stale-target recreation when recreationPolicy also allows it. */
-  pageTargets?: Pick<PageTargetController, 'createTarget'>;
+  /** Optional; enables §9.5 stale-target recreation (createTarget) and the post-recheck
+   *  discovery navigation that generates fresh-window traffic before capture (navigate). */
+  pageTargets?: Pick<PageTargetController, 'createTarget' | 'navigate'>;
   /** §9.5: return true ONLY when it is safe to recreate a stale target and retry the recheck. */
   recreationPolicy?: (context: SafeRecreationContext) => boolean;
+  /** Optional authoritative binding: maps the session surrogate to its owning
+   *  `{ runId, pageTargetRef }`. When provided, the flow verifies the supplied run + page
+   *  target belong to the session, closing cross-run target mixing (the checkpoint carries the
+   *  session ref but not the page target ref). */
+  sessionRegistry?: Pick<BrowserSessionRegistry, 'get'>;
 };
 
 export type ResumeBrowserRunInput = {
@@ -123,11 +130,25 @@ export async function resumeBrowserRun(
   deps: ResumeBrowserRunDeps,
   input: ResumeBrowserRunInput,
 ): Promise<ResumeBrowserRunResult> {
-  // Validate ref SHAPES BEFORE the resume transition: if a ref is malformed, throwing here (no
-  // checkpoint change yet) lets the caller fix the input and retry. After resumeRun commits to
+  // Validate ref SHAPES + OWNERSHIP BEFORE the resume transition: throwing here (no checkpoint
+  // change yet) lets the caller fix the input and retry. After resumeRun commits to
   // running_after_resume, a re-resume is rejected, so a late throw would strand the run.
   guardSurrogateSessionId('browserSessionRef', input.browserSessionRef);
   guardPageTargetRef('pageTargetRef', String(input.pageTargetRef));
+
+  // OWNERSHIP (I1): the checkpoint carries only the session ref, so page-target ownership is
+  // verified against the registry (session -> { runId, pageTargetRef }) when one is provided. A
+  // session not registered, or a run/target that does not belong to it, is a cross-run mix ->
+  // reject BEFORE transitioning (retryable), same disposal as a malformed ref.
+  if (deps.sessionRegistry) {
+    const record = deps.sessionRegistry.get(input.browserSessionRef);
+    const ownsRun = record !== undefined && record.runId === input.runId;
+    const ownsTarget =
+      record?.pageTargetRef === undefined || String(record.pageTargetRef) === String(input.pageTargetRef);
+    if (!ownsRun || !ownsTarget) {
+      throw new Error('browser session does not own this run / page target');
+    }
+  }
 
   // A duplicate/stale resume is rejected by the coordinator here (RuntimeCoordinatorError
   // propagates to the caller) BEFORE any recheck or evidence work.
@@ -138,22 +159,35 @@ export async function resumeBrowserRun(
     now: input.now,
   });
 
-  // BIND the session to the resumed run: the authoritative ref is the one the checkpoint
-  // carries from intervention time. A caller-supplied ref that differs is a cross-run mix
-  // attempt -> fail terminally (we have already transitioned, so we cannot simply throw).
-  const boundSessionRef = resumed.browserSessionRef;
-  if (boundSessionRef !== undefined && boundSessionRef !== input.browserSessionRef) {
+  // Track the LATEST committed checkpoint version so a terminal markFailed always targets the
+  // current version (each successful transition advances it) -- otherwise a throw after
+  // confirm/record would markFailed with a stale version, get rejected, and strand the run.
+  let latestVersion = resumed.version;
+  const failTerminally = async (
+    code: string,
+    recheckCode: string,
+    message: string,
+  ): Promise<ResumeBrowserRunResult> => {
     const failed = await deps.coordinator.markFailed({
       runId: input.runId,
-      expectedVersion: resumed.version,
+      expectedVersion: latestVersion,
       now: input.now,
-      code: 'auth-recheck-session-mismatch',
-      message: 'The supplied browser session does not match the run.',
-      eventData: { stepId: 'auth_state_recheck', authRecheck: 'failed', recheckCode: 'session-mismatch' },
+      code,
+      message,
+      eventData: { stepId: 'auth_state_recheck', authRecheck: 'failed', recheckCode },
     });
-    return { outcome: 'recheck-failed', checkpoint: failed, recheckOk: false, recheckCode: 'session-mismatch' };
+    return { outcome: 'recheck-failed', checkpoint: failed, recheckOk: false, recheckCode };
+  };
+
+  // BIND the session to the resumed run authoritatively (I3). The checkpoint MUST carry a
+  // browserSessionRef (set at intervention time) and it must equal the supplied one -- absence
+  // is NOT permission to adopt a caller-supplied session (that would let a generic completed
+  // intervention be resumed with another run's session). A differing ref is a cross-run mix.
+  const boundSessionRef = resumed.browserSessionRef;
+  if (boundSessionRef === undefined || boundSessionRef !== input.browserSessionRef) {
+    return failTerminally('auth-recheck-session-mismatch', 'session-mismatch', 'The supplied browser session is not bound to this run.');
   }
-  const sessionRef = boundSessionRef ?? input.browserSessionRef;
+  const sessionRef = boundSessionRef;
 
   // Every post-transition step is wrapped: a thrown error (rechecker/probe/controller) must
   // become a TERMINAL failure, not a stranded running_after_resume checkpoint (§9.4).
@@ -205,15 +239,7 @@ export async function resumeBrowserRun(
       // Re-derive a SAFE code + message from the VALIDATED failure code; never forward the
       // rechecker's own `message`/`diagnostics` (a foreign rechecker could put secrets there).
       const code = isBrowserAuthRecheckFailureCode(snapshot.code) ? snapshot.code : 'still-unauthorized';
-      const failed = await deps.coordinator.markFailed({
-        runId: input.runId,
-        expectedVersion: resumed.version,
-        now: input.now,
-        code: `auth-recheck-${code}`,
-        message: browserAuthRecheckMessage(code),
-        eventData: { stepId: 'auth_state_recheck', authRecheck: 'failed', recheckCode: code },
-      });
-      return { outcome: 'recheck-failed', checkpoint: failed, recheckOk: false, recheckCode: code };
+      return failTerminally(`auth-recheck-${code}`, code, browserAuthRecheckMessage(code));
     }
 
     // Recheck passed -> transition back into normal running. Only now may evidence be captured.
@@ -225,6 +251,7 @@ export async function resumeBrowserRun(
       browserSessionRef: sessionRef,
       eventData: { authRecheck: 'passed', recheckConfidence: snapshot.confidence },
     });
+    latestVersion = confirmed.version;
 
     const captureTargetRef = safePageTargetRef(snapshot.pageTargetRef, activeTargetRef);
     // Open a FRESH capture window at the post-recheck boundary: `session.start` resets the
@@ -232,6 +259,13 @@ export async function resumeBrowserRun(
     // -- human-login / recheck traffic is never folded into it -- and a recreated target (a new
     // ref the caller never started) is covered.
     await deps.session.start({ runId: input.runId, pageTargetRef: captureTargetRef, now: input.now });
+    // Perform the discovery navigation INSIDE the fresh window (when a navigator + target URL
+    // are available), so a real buffering source has deterministic post-recheck traffic to
+    // capture -- otherwise start()'s reset would be immediately followed by stop() with nothing
+    // in between. A fixture source (tests) needs no navigator; its collect() returns fixtures.
+    if (deps.pageTargets?.navigate && typeof input.targetUrl === 'string' && input.targetUrl.length > 0) {
+      await deps.pageTargets.navigate({ pageTargetRef: captureTargetRef, url: input.targetUrl, now: input.now });
+    }
     const capture = await runBrowserNetworkCaptureFlow(
       { session: deps.session, coordinator: deps.coordinator, normalize: deps.normalize },
       {
@@ -243,9 +277,15 @@ export async function resumeBrowserRun(
         intentId: input.intentId,
         browserSessionRef: sessionRef,
         priorEvidenceRefs: confirmed.evidenceRefs,
+        // Record that discovery is the last completed step so a multi-step executor resumes at
+        // the right point (not back at auth_state_recheck) when the run stays active.
+        lastCompletedStepId: 'discovering_network',
         captureId: input.captureId,
       },
     );
+    if (capture.recorded && capture.checkpoint) {
+      latestVersion = capture.checkpoint.version;
+    }
 
     // An error-level normalizer diagnostic stops the capture flow before any transition; the run
     // stays at running for a later step / retry.
@@ -267,18 +307,12 @@ export async function resumeBrowserRun(
       eventData: { evidenceRefCount: capture.evidenceRefs.length },
     });
     return { outcome: 'completed', checkpoint: final, recheckOk: true, capture };
-  } catch (error) {
-    // A post-transition failure (recheck/probe/controller throw, or a coordinator error other
-    // than the initial resume) must not leave the run stranded in running_after_resume. Convert
-    // it to a terminal markFailed. If markFailed itself fails, rethrow (nothing safe to do).
-    const failed = await deps.coordinator.markFailed({
-      runId: input.runId,
-      expectedVersion: resumed.version,
-      now: input.now,
-      code: 'auth-recheck-error',
-      message: 'The authenticated-state recheck could not be completed.',
-      eventData: { stepId: 'auth_state_recheck', authRecheck: 'failed', recheckCode: 'recheck-error' },
-    });
-    return { outcome: 'recheck-failed', checkpoint: failed, recheckOk: false, recheckCode: 'recheck-error' };
+  } catch {
+    // A post-transition failure (recheck/probe/controller/session throw, or a coordinator error
+    // other than the initial resume) must not leave the run stranded. Convert it to a terminal
+    // markFailed from the LATEST committed version (updated after confirm/record) -- using a
+    // stale version here would itself be rejected. If markFailed still fails, it rethrows
+    // (nothing safe remains).
+    return failTerminally('auth-recheck-error', 'recheck-error', 'The authenticated-state recheck could not be completed.');
   }
 }

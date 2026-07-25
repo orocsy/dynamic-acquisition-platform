@@ -118,16 +118,18 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
   }
 
   async start(input: StartNetworkCaptureInput): Promise<void> {
+    const key = this.#key(input.runId, input.pageTargetRef);
     const expectedTarget = String(input.pageTargetRef);
-    // RESET the capture window FIRST: signal the source to begin/reset NOW so a re-start at a
-    // later boundary (e.g. post-auth-recheck) discards anything the transport buffered before
-    // it. Only after a successful reset is the window marked active -- if beginCapture rejects,
-    // the key is NOT added, so a later stop() cannot collect the old, unreset buffer. A fixture
-    // source omits beginCapture and is unaffected.
+    // INVALIDATE the window before resetting: even a RE-start of an already-active window must
+    // not leave the old key live if the reset fails. Drop the key first, run the source's
+    // begin/reset, and re-add the key ONLY after a successful reset -- so if beginCapture
+    // rejects, a later stop() cannot collect the old, pre-boundary buffer. (A fixture source
+    // omits beginCapture; the delete+add is then a no-op round-trip.)
+    this.#active.delete(key);
     if (this.#source.beginCapture) {
       await this.#source.beginCapture({ runId: input.runId, pageTargetRef: expectedTarget });
     }
-    this.#active.add(this.#key(input.runId, input.pageTargetRef));
+    this.#active.add(key);
   }
 
   async stop(input: StopNetworkCaptureInput): Promise<NetworkCaptureResult> {

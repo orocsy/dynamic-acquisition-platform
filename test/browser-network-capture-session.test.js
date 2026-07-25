@@ -180,3 +180,19 @@ test('start() calls source.beginCapture to reset the window', async () => {
   const r = await plain.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
   assert.equal(r.observations.length, 0);
 });
+
+// Codex re-review of PR #5 round 3 (J4): a RE-start of an already-active window whose second
+// beginCapture rejects must NOT leave the old key active -- else a later stop() collects the
+// old pre-boundary buffer.
+test('a failed re-start invalidates the previously active window', async () => {
+  let call = 0;
+  const source = {
+    beginCapture: async () => { call += 1; if (call === 2) throw new Error('reset failed'); },
+    collect: async () => [{ id: 'stale', runId: 'run_1', pageTargetRef: 'page:t-1', source: 'cdp', capturedAt: '2026-01-01T00:00:00.000Z', request: { url: 'https://h/x', method: 'GET' } }],
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // first start succeeds (window active)
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /reset failed/); // re-start reset fails
+  // the window must no longer be active -> stop() rejects rather than collecting the stale buffer
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});

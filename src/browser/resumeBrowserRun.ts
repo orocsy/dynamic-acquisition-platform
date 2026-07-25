@@ -4,7 +4,6 @@ import type {
   RuntimeCoordinatorFailureInput,
 } from '../runtime';
 import type { RunCheckpoint } from '../runtime';
-import { isPageTargetRef } from './browserRef';
 import { guardPageTargetRef, guardSurrogateSessionId } from './persistenceGuard';
 import type { BrowserAuthRechecker, BrowserAuthRecheckResult } from './authRecheck';
 import { browserAuthRecheckMessage, isBrowserAuthRecheckFailureCode } from './authRecheck';
@@ -95,11 +94,6 @@ export type ResumeBrowserRunResult = {
   capture?: BrowserNetworkCaptureFlowResult;
 };
 
-function safePageTargetRef(candidate: unknown, fallback: PageTargetRef | string): PageTargetRef | string {
-  // A foreign rechecker's returned ref must not drive capture unless it is the page:<id> shape.
-  return typeof candidate === 'string' && isPageTargetRef(candidate) ? candidate : fallback;
-}
-
 function clampConfidence(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
 }
@@ -136,15 +130,17 @@ export async function resumeBrowserRun(
   guardSurrogateSessionId('browserSessionRef', input.browserSessionRef);
   guardPageTargetRef('pageTargetRef', String(input.pageTargetRef));
 
-  // OWNERSHIP (I1): the checkpoint carries only the session ref, so page-target ownership is
-  // verified against the registry (session -> { runId, pageTargetRef }) when one is provided. A
-  // session not registered, or a run/target that does not belong to it, is a cross-run mix ->
-  // reject BEFORE transitioning (retryable), same disposal as a malformed ref.
+  // OWNERSHIP (I1/J1): the checkpoint carries only the session ref, so run + page-target
+  // ownership is verified against the registry (session -> { daemonId, runId, pageTargetRef })
+  // when one is provided. FAIL CLOSED: the record must exist, own this run, AND carry a page
+  // target that EXACTLY equals the supplied one -- a record with no bound target does NOT
+  // authorize an arbitrary target. Rejected BEFORE transitioning (retryable), like a malformed
+  // ref. The record is captured for the recreation daemon check (J5) below.
+  const sessionRecord = deps.sessionRegistry?.get(input.browserSessionRef);
   if (deps.sessionRegistry) {
-    const record = deps.sessionRegistry.get(input.browserSessionRef);
-    const ownsRun = record !== undefined && record.runId === input.runId;
+    const ownsRun = sessionRecord !== undefined && sessionRecord.runId === input.runId;
     const ownsTarget =
-      record?.pageTargetRef === undefined || String(record.pageTargetRef) === String(input.pageTargetRef);
+      sessionRecord?.pageTargetRef !== undefined && String(sessionRecord.pageTargetRef) === String(input.pageTargetRef);
     if (!ownsRun || !ownsTarget) {
       throw new Error('browser session does not own this run / page target');
     }
@@ -206,6 +202,13 @@ export async function resumeBrowserRun(
     // §9.5 safe target recreation: ONLY on target-stale, ONLY when a policy explicitly allows
     // it, a recreation controller is present, an intent URL is available, AND the caller
     // asserts NO side effect was in progress (an omitted/unknown value is NOT safe). Once only.
+    // The recreation daemon MUST be the session's own daemon (J5): the registry is required and
+    // its `daemonId` must equal the supplied `daemonRef.id`, so recreation can't run browser
+    // work on another session's daemon. Fail closed -- no registry / no match => no recreation.
+    const recreationDaemonBound =
+      sessionRecord !== undefined &&
+      input.daemonRef !== undefined &&
+      String(sessionRecord.daemonId) === String(input.daemonRef.id);
     if (
       snapshot.ok === false &&
       snapshot.code === 'target-stale' &&
@@ -214,6 +217,7 @@ export async function resumeBrowserRun(
       typeof input.targetUrl === 'string' &&
       input.targetUrl.length > 0 &&
       input.daemonRef !== undefined &&
+      recreationDaemonBound &&
       input.sideEffectInProgress === false &&
       deps.recreationPolicy({ runId: input.runId, targetUrl: input.targetUrl, sideEffectInProgress: false })
     ) {
@@ -253,7 +257,10 @@ export async function resumeBrowserRun(
     });
     latestVersion = confirmed.version;
 
-    const captureTargetRef = safePageTargetRef(snapshot.pageTargetRef, activeTargetRef);
+    // Capture drives ONLY the already-authorized target (J2): `activeTargetRef` is either the
+    // registry-verified input ref or the target we recreated ourselves. A rechecker-returned
+    // `pageTargetRef` is NOT trusted to substitute a different (possibly foreign) page here.
+    const captureTargetRef = activeTargetRef;
     // Open a FRESH capture window at the post-recheck boundary: `session.start` resets the
     // source's window (beginCapture), so discovery evidence begins strictly AFTER confirmation
     // -- human-login / recheck traffic is never folded into it -- and a recreated target (a new
@@ -263,8 +270,14 @@ export async function resumeBrowserRun(
     // are available), so a real buffering source has deterministic post-recheck traffic to
     // capture -- otherwise start()'s reset would be immediately followed by stop() with nothing
     // in between. A fixture source (tests) needs no navigator; its collect() returns fixtures.
+    // navigate() reports a NORMAL failure as `ok: false` (not a throw) and marks the target
+    // stale, so an unchecked result would let a stale/zero-evidence run complete (J3): a failed
+    // navigation fails the run terminally BEFORE any capture.
     if (deps.pageTargets?.navigate && typeof input.targetUrl === 'string' && input.targetUrl.length > 0) {
-      await deps.pageTargets.navigate({ pageTargetRef: captureTargetRef, url: input.targetUrl, now: input.now });
+      const navResult = await deps.pageTargets.navigate({ pageTargetRef: captureTargetRef, url: input.targetUrl, now: input.now });
+      if (!navResult || navResult.ok !== true) {
+        return failTerminally('auth-recheck-discovery-nav-failed', 'discovery-nav-failed', 'The post-recheck discovery navigation did not succeed.');
+      }
     }
     const capture = await runBrowserNetworkCaptureFlow(
       { session: deps.session, coordinator: deps.coordinator, normalize: deps.normalize },

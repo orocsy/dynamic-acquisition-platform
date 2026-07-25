@@ -114,13 +114,78 @@ test('stale target with a safe recreation policy continues after a new target re
   const rechecker = new FakeBrowserAuthRechecker(() => (++recheckCalls === 1 ? authRecheckFailure('target-stale') : { ok: true, confidence: 1, diagnostics: [] }));
   const created = [];
   const pageTargets = { createTarget: async (input) => { created.push(input); return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; } };
+  // J5: recreation requires the registry to bind the session to its owning daemon; the supplied
+  // daemonRef.id must equal the record's daemonId.
+  const sessionRegistry = { get: () => ({ daemonId: 'daemon_1', runId: 'run_ac_001', pageTargetRef: 'page:t-1' }) };
   const result = await resumeBrowserRun(
-    { coordinator, rechecker, session, pageTargets, recreationPolicy: () => true },
+    { coordinator, rechecker, session, pageTargets, recreationPolicy: () => true, sessionRegistry },
     { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: { id: 'daemon_1', kind: 'local-chrome-daemon', mode: 'dedicated-daemon', healthUrlPreview: 'http://127.0.0.1:9222' }, sideEffectInProgress: false, now: NOW, completeRun: true },
   );
   assert.equal(result.outcome, 'completed');
   assert.equal(recheckCalls, 2); // retried once after recreation
   assert.equal(created.length, 1);
+});
+
+// Codex re-review of PR #5 round 3 (J5): recreation with a daemonRef whose id does NOT match
+// the session's registry-bound daemon is blocked (no browser work on a foreign daemon).
+test('recreation is blocked when the daemonRef does not match the session daemon', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  let created = 0;
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker(authRecheckFailure('target-stale')), session: await startedSession([safeObs('o1')]),
+      pageTargets: { createTarget: async () => { created += 1; return { pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }; } },
+      recreationPolicy: () => true,
+      sessionRegistry: { get: () => ({ daemonId: 'daemon_OWN', runId: 'run_ac_001', pageTargetRef: 'page:t-1' }) } },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: { id: 'daemon_FOREIGN', kind: 'local-chrome-daemon', mode: 'dedicated-daemon', healthUrlPreview: 'http://127.0.0.1:9222' }, sideEffectInProgress: false, now: NOW },
+  );
+  assert.equal(result.outcome, 'recheck-failed');
+  assert.equal(created, 0);
+});
+
+// Codex re-review of PR #5 round 3 (J1): a registry record with NO bound page target does not
+// authorize an arbitrary target (fail closed).
+test('a registry record without a bound page target rejects any target', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const sessionRegistry = { get: () => ({ daemonId: 'd', runId: 'run_ac_001' }) }; // no pageTargetRef
+  await assert.rejects(
+    () => resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session: { start: async () => {}, stop: async () => ({ observations: [], diagnostics: [] }), listObservations: async () => [] }, sessionRegistry },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', now: NOW },
+    ),
+    /does not own this run/,
+  );
+});
+
+// Codex re-review of PR #5 round 3 (J2): a rechecker-returned pageTargetRef must NOT substitute
+// the authorized target for capture.
+test('a rechecker-returned pageTargetRef does not redirect capture', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const rechecker = { recheck: async () => ({ ok: true, confidence: 1, pageTargetRef: 'page:FOREIGN', diagnostics: [] }) };
+  const keys = [];
+  const session = { start: async (i) => keys.push(i.pageTargetRef), stop: async (i) => { keys.push(i.pageTargetRef); return { observations: [], diagnostics: [] }; }, listObservations: async () => [] };
+  await resumeBrowserRun({ coordinator, rechecker, session }, { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', now: NOW });
+  assert.ok(keys.every((k) => k === 'page:t-1'), JSON.stringify(keys)); // authorized target only, not page:FOREIGN
+});
+
+// Codex re-review of PR #5 round 3 (J3): a discovery navigation that resolves ok:false (a
+// normal failure, not a throw) fails the run terminally before capture.
+test('a failed discovery navigation fails the run before capture', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  let stopped = false;
+  const session = { start: async () => {}, stop: async () => { stopped = true; return { observations: [], diagnostics: [] }; }, listObservations: async () => [] };
+  const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => ({ ok: false, pageTargetRef: 'page:t-1', state: 'stale', diagnostics: [] }) };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+  );
+  assert.equal(result.outcome, 'recheck-failed');
+  assert.equal(result.recheckCode, 'discovery-nav-failed');
+  assert.equal(result.checkpoint.status, 'failed');
+  assert.equal(stopped, false); // capture never ran
 });
 
 test('stale target WITHOUT a permitting policy fails safely (no recreation)', async () => {

@@ -16,3 +16,5 @@ export * from './pageTargetController';
 export * from './fakePageTargetController';
 export * from './authBoundaryDetector';
 export * from './browserRuntimeAdapter';
+export * from './authRecheck';
+export * from './resumeBrowserRun';

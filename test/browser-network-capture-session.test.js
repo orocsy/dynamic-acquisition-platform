@@ -164,3 +164,298 @@ test('session strips MIME parameters before storing an observation', async () =>
   assert.equal(JSON.stringify(result).includes('MIMESECRET'), false);
   assert.equal(JSON.stringify(await session.listObservations('run_1')).includes('MIMESECRET'), false);
 });
+
+// Codex re-review of PR #5 round 1 (H3): start() must signal the source to begin/reset the
+// capture window, so a re-start at a later boundary (post-auth-recheck) discards earlier traffic.
+test('start() calls source.beginCapture to reset the window', async () => {
+  const begins = [];
+  const source = { beginCapture: (input) => { begins.push(input.pageTargetRef); }, collect: async () => [] };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // re-start resets again
+  assert.deepEqual(begins, ['page:t-1', 'page:t-1']);
+  // a source without beginCapture (a fixture) still works
+  const plain = new BrowserNetworkCaptureSession({ collect: async () => [] });
+  await plain.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  const r = await plain.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(r.observations.length, 0);
+});
+
+// Codex re-review of PR #5 round 3 (J4): a RE-start of an already-active window whose second
+// beginCapture rejects must NOT leave the old key active -- else a later stop() collects the
+// old pre-boundary buffer.
+test('a failed re-start invalidates the previously active window', async () => {
+  let call = 0;
+  const source = {
+    beginCapture: async () => { call += 1; if (call === 2) throw new Error('reset failed'); },
+    collect: async () => [{ id: 'stale', runId: 'run_1', pageTargetRef: 'page:t-1', source: 'cdp', capturedAt: '2026-01-01T00:00:00.000Z', request: { url: 'https://h/x', method: 'GET' } }],
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // first start succeeds (window active)
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /reset failed/); // re-start reset fails
+  // the window must no longer be active -> stop() rejects rather than collecting the stale buffer
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});
+
+// Codex re-review of PR #5 round 4 (K4): abort() closes an opened window WITHOUT collecting,
+// tells the source to discard its buffer, and makes a later stop() invalid.
+test('abort() discards the window without collecting', async () => {
+  const calls = [];
+  const source = {
+    beginCapture: () => calls.push('begin'),
+    abortCapture: () => calls.push('abort'),
+    collect: async () => { calls.push('collect'); return []; },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(calls, ['begin', 'abort']); // never collected
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+  assert.deepEqual(await session.listObservations('run_1'), []);
+  // aborting an unopened window is a harmless no-op (no source call)
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:never' });
+  assert.deepEqual(calls, ['begin', 'abort']);
+});
+
+// Codex re-review of PR #5 round 6 (P2): a REJECTED source abortCapture() must leave the
+// teardown retryable. Deleting only the active key meant the retry saw "no window", skipped
+// the source call, and the transport stayed live and buffering for a terminal run.
+test('a rejected source abortCapture keeps the teardown retryable', async () => {
+  let attempts = 0;
+  const source = {
+    collect: async () => [],
+    abortCapture: async () => { attempts += 1; if (attempts === 1) throw new Error('transport hiccup'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await assert.rejects(() => session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /transport hiccup/);
+  // the window is already closed to stop() (no stale collection)...
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+  // ...and a RETRIED abort still reaches the source teardown
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(attempts, 2);
+  // once the teardown succeeded, another abort is a no-op again
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(attempts, 2);
+});
+
+// Codex re-review of PR #5 round 6 (P2): the window key and the source calls must share ONE
+// canonical conversion of the caller's ref. A stateful toString() could otherwise register
+// page A as active while resetting page B, so stop(A) would collect A's unreset pre-boundary
+// buffer (login/recheck traffic) as discovery evidence.
+test('start() canonicalizes the target once (stateful toString cannot split key and reset)', async () => {
+  const resets = [];
+  const source = { collect: async () => [], beginCapture: (i) => resets.push(i.pageTargetRef) };
+  const session = new BrowserNetworkCaptureSession(source);
+  let conversions = 0;
+  const shifty = { toString() { conversions += 1; return conversions === 1 ? 'page:a' : 'page:b'; } };
+  await session.start({ runId: 'run_1', pageTargetRef: shifty });
+  assert.equal(conversions, 1); // converted exactly once
+  assert.deepEqual(resets, ['page:a']); // the reset went to the SAME page the key was derived from
+  // and the active window is the one that was actually reset
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:a' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 7 (P2): start() may only clear a teardown debt when an
+// ACTUAL reset ran. A source with abortCapture but no beginCapture must have the debt repaid
+// (teardown retried) before its window may reopen -- otherwise the restart would mark the
+// window active over the still-live stale buffer and stop() could collect it.
+test('an unpaid teardown debt is repaid before a source without beginCapture restarts', async () => {
+  let attempts = 0;
+  const source = {
+    collect: async () => [],
+    // NO beginCapture on this source
+    abortCapture: async () => { attempts += 1; if (attempts < 3) throw new Error('teardown failing'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await assert.rejects(() => session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /teardown failing/); // attempt 1, debt kept
+  // a restart may NOT proceed while the repayment itself fails -- and the window stays closed
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /teardown failing/); // attempt 2
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+  // once the repayment succeeds the window reopens normally
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // attempt 3 succeeds
+  assert.equal(attempts, 3);
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 7 (P2): runId is snapshotted alongside the page ref -- a
+// stateful runId cannot register run A as active while resetting run B.
+test('start() canonicalizes the runId once (stateful toString cannot split key and reset)', async () => {
+  const resets = [];
+  const source = { collect: async () => [], beginCapture: (i) => resets.push(i.runId) };
+  const session = new BrowserNetworkCaptureSession(source);
+  let conversions = 0;
+  const shifty = { toString() { conversions += 1; return conversions === 1 ? 'run_A' : 'run_B'; } };
+  await session.start({ runId: shifty, pageTargetRef: 'page:t-1' });
+  assert.equal(conversions, 1); // converted exactly once
+  assert.deepEqual(resets, ['run_A']); // the reset went to the SAME run the key was derived from
+  const result = await session.stop({ runId: 'run_A', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 8 (P2): if the teardown capability DISAPPEARS while a debt
+// is unpaid (adaptive source dropping abortCapture after a transport failure), start() must
+// fail and RETAIN the debt -- not silently activate the window over the stale buffer.
+test('start() fails and retains the debt when the teardown capability disappears', async () => {
+  let attempts = 0;
+  const source = {
+    collect: async () => [],
+    // NO beginCapture on this source
+    abortCapture: async () => { attempts += 1; throw new Error('teardown failing'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await assert.rejects(() => session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /teardown failing/); // debt created
+  delete source.abortCapture; // capability vanishes
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/); // window stayed closed
+  // capability returns and succeeds -> the RETAINED debt is repaid and the window reopens
+  source.abortCapture = async () => { attempts += 1; };
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(attempts, 2); // failed once, repaid once
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 9 (P2): the teardown debt is recorded BEFORE the capability
+// check -- a source that loses abortCapture between start() and abort() must still owe the
+// teardown, so a later restart repays it (or fails) instead of reopening over the stale
+// buffer.
+test('abort() records the debt even when the capability has already vanished', async () => {
+  let attempts = 0;
+  const source = {
+    collect: async () => [],
+    // NO beginCapture; abortCapture present at start() time...
+    abortCapture: async () => { attempts += 1; },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  delete source.abortCapture; // ...but gone by abort() time
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // no throw, but the debt is recorded
+  assert.equal(attempts, 0);
+  // the debt blocks a restart while the capability is still missing
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
+  // once the capability returns, the restart repays the debt and reopens
+  source.abortCapture = async () => { attempts += 1; };
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(attempts, 1);
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 10 (P2, REGRESSION from round 9): a source with NEITHER
+// beginCapture NOR abortCapture (the documented fixture shape) must still abort and restart
+// normally -- it holds no buffer, so it can never owe a teardown. Round 9 charged every
+// window a debt and permanently bricked restarts for these sources.
+test('a source without any teardown hooks can still abort and restart', async () => {
+  const session = new BrowserNetworkCaptureSession({ collect: async () => [] }); // collect ONLY
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // must NOT throw
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 10 (P2): lifecycle ops for one window are serialized. A
+// slow abortCapture must not land AFTER a concurrent start() has reset and reopened the
+// window -- that would discard the fresh source window while the active key stayed set, so a
+// later stop() would collect from a torn-down window.
+test('a slow abort cannot tear down a window opened by a concurrent start', async () => {
+  const order = [];
+  let releaseAbort;
+  const source = {
+    collect: async () => { order.push('collect'); return []; },
+    beginCapture: () => { order.push('begin'); },
+    abortCapture: async () => { order.push('abort:enter'); await new Promise((r) => { releaseAbort = r; }); order.push('abort:exit'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  const aborting = session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // hangs inside abortCapture
+  await new Promise((r) => setTimeout(r, 5));
+  const restarting = session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // queued behind the abort
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(order, ['begin', 'abort:enter'], 'the restart must not run while abort is in flight');
+  releaseAbort();
+  await aborting;
+  await restarting;
+  // the reset for the NEW window happened strictly after the old teardown finished
+  assert.deepEqual(order, ['begin', 'abort:enter', 'abort:exit', 'begin']);
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 11 (P2): a FAILED re-start of an ACTIVE window leaves the
+// old source window possibly buffering while the active key is already gone -- nothing
+// downstream could reclaim it. The failed reset now records (and repays) the teardown.
+test('a failed restart reset tears down the previously active window', async () => {
+  const calls = [];
+  let failReset = false;
+  const source = {
+    collect: async () => [],
+    beginCapture: () => { calls.push('begin'); if (failReset) throw new Error('reset failed'); },
+    abortCapture: async () => { calls.push('abort'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // window active
+  failReset = true;
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /reset failed/);
+  // the OLD window was torn down rather than left buffering
+  assert.deepEqual(calls, ['begin', 'begin', 'abort']);
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});
+
+// Codex re-review of PR #5 round 12 (P2): a begin-capable-but-NOT-abort-capable window is
+// buffer-backed, so it owes cleanup too. If that adaptive source later loses beginCapture, a
+// restart must not reactivate the key over the unreset pre-boundary buffer.
+test('a begin-capable window still owes cleanup after its reset hook disappears', async () => {
+  const source = {
+    collect: async () => [{ id: 'stale-1', runId: 'run_1', pageTargetRef: 'page:t-1', source: 'cdp', capturedAt: '2026-07-15T02:00:00.000Z', request: { url: 'https://api.example.com/v1/x', method: 'GET' }, response: { status: 200 } }],
+    beginCapture: () => {}, // reset hook, but NO abortCapture
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // buffer-backed window
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // owes cleanup, cannot repay
+  delete source.beginCapture; // the source loses its reset hook too
+  // With neither a reset nor a teardown available, the window must NOT reopen over the buffer.
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});
+
+// Codex re-review of PR #5 round 13 (P2): the capture hooks are snapshotted BEFORE they are
+// invoked. A begin-only adaptive source that drops beginCapture during its own call used to
+// leave the opened window recorded as NOT buffer-backed, so a later abort created no debt and
+// a hookless restart could reactivate the key over the stale pre-boundary buffer.
+test('a hook removed during its own call still marks the window buffer-backed', async () => {
+  const source = {
+    collect: async () => [],
+    beginCapture() { delete source.beginCapture; }, // vanishes while opening the window
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // buffer-backed window
+  assert.equal(source.beginCapture, undefined);
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // owes cleanup, cannot repay
+  // the debt must block a restart that can neither reset nor tear down the stale buffer
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});
+
+// Codex re-review of PR #5 round 14 (P2): a beginCapture that starts buffering and THEN
+// rejects on an INITIAL start leaves a partial buffer with no active key, so no later abort()
+// could reclaim it. Any buffer-backed start now owes cleanup for the buffer it attempted,
+// regardless of whether an older active window existed.
+test('a failed initial beginCapture still owes cleanup for the buffer it started', async () => {
+  const calls = [];
+  const source = {
+    collect: async () => [],
+    beginCapture: () => { calls.push('begin'); throw new Error('buffered then failed'); },
+    abortCapture: async () => { calls.push('abort'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  // FIRST start (nothing was active before) -- the reset fails after the source began buffering
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /buffered then failed/);
+  assert.deepEqual(calls, ['begin', 'abort'], 'the attempted buffer must be torn down');
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});

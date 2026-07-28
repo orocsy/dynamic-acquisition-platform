@@ -37,13 +37,18 @@ export class BrowserPersistenceError extends Error {
 
 /** REJECT: the opaque surrogate session id that lands in a checkpoint. */
 export function guardSurrogateSessionId(field: string, value: string): string {
-  if (!isOpaqueSurrogateSessionId(value)) {
+  // Convert ONCE and validate/return that exact snapshot (same discipline as
+  // guardPageTargetRef): the predicate's regex tests would otherwise coerce a caller
+  // object repeatedly, letting a stateful toString() pass validation as one ref and be
+  // consumed downstream as another.
+  const canonical = String(value);
+  if (!isOpaqueSurrogateSessionId(canonical)) {
     throw new BrowserPersistenceError(
       field,
       'must be an opaque surrogate (not the transparent daemon:...:session:... form, no secrets/paths)',
     );
   }
-  return value;
+  return canonical;
 }
 
 /** REJECT: an opaque operational ref (no ws/devtools URL, no profile path). Optional. */
@@ -68,13 +73,17 @@ export function guardOpaqueRef(field: string, value: string | undefined): string
  */
 export function guardPageTargetRef(field: string, value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
-  if (!isPageTargetRef(String(value))) {
+  // Convert ONCE and return that exact snapshot: a JS caller can pass an object whose
+  // stateful toString() yields a valid ref during validation and a different one afterwards,
+  // so validating one conversion and returning a second would bless a never-validated ref.
+  const canonical = String(value);
+  if (!isPageTargetRef(canonical)) {
     throw new BrowserPersistenceError(
       field,
       'must be a page target ref (page:<opaque-id>; not a session/transparent ref, ws/devtools URL, or profile path)',
     );
   }
-  return String(value);
+  return canonical;
 }
 
 /** REJECT: a ref *part* (daemonId/runId) — opaque AND free of `:`/whitespace. */

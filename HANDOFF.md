@@ -1,7 +1,77 @@
-# Handoff — Phase 3.4 merged; Phase 3.5 implemented (PR pending)
+# Handoff — Phases 3.4/3.5 merged; Phase 3.6 in review (PR #5 open)
 
 Snapshot for picking this up in a fresh session (e.g. Claude Code). Read this
 first, then `docs/phase3-low-level-design.md` for the slice you're building.
+
+**Dated sections below are newest-first; a later section supersedes an earlier
+one wherever they conflict.**
+
+## 2026-07-28 update — Phase 3.6 (NEWEST; read this first)
+
+**Where things stand**
+
+- **Phases 3.4 (PR #3, `e6ef1cd`) and 3.5 (PR #4, `28de86e`) are MERGED to
+  `main`.**
+- **Phase 3.6 (browser-backed resume auth recheck, LLD §9) is IMPLEMENTED but
+  NOT MERGED.** Branch `phase3.6-resume-auth-recheck` = **PR #5**, head
+  `45b41de`, 19 commits ahead of `main`, 0 behind, MERGEABLE/CLEAN.
+- **368 tests pass**, `npm run check` green, three adversarial probes green.
+- The codex review loop has run **15 rounds / 76 findings, all fixed**. Round 16
+  was requested against `45b41de` and had not returned when this was written.
+- Merging is a **user action** (as it was for PRs #3 and #4) and the loop has
+  not yet returned a clean round.
+
+**→ The full engineering record for this slice is
+`docs/phase3.6-resume-auth-recheck.md`.** Read that before touching
+`authRecheck.ts` or `resumeBrowserRun.ts`. It carries the invariant catalogue
+(I*/J*/K* labels used in the source comments), the two URL gates, the daemon
+binding rules, and the post-merge checklist. The highlights that matter even if
+you read nothing else:
+
+1. **Four recurring defect classes** account for nearly every finding in rounds
+   4–12: (a) validate-once/read-twice TOCTOU on untrusted objects — fixed by
+   snapshotting at the boundary; (b) *authorized ≠ safe* — ownership checks do
+   not license a destination; (c) optional capabilities must fail closed across
+   their whole lifecycle, including when a source *loses* one mid-flight;
+   (d) every created resource needs an owner on every terminal path.
+2. **Trap worth memorising:** `x === undefined ? {} : { x }` reads the getter
+   **twice** and stores the **second** value — it silently defeats a snapshot
+   and looks completely idiomatic. Read each field into a local first.
+3. **The finding count did not converge monotonically** (9→7→5→8→4→4→3→2→3→8→6→4→3→7→3).
+   Rounds 10–15 were largely the reviewer auditing my *own* round-8/9 fixes, and
+   found a regression in one and a bug inside another. New defensive machinery
+   is itself new attack surface and needs its own review pass.
+4. **Redirect safety is a Phase 3.7 acceptance criterion, not optional
+   hardening.** The URL gate covers the entry URL only; a redirect to a local
+   service cannot be detected after the fact (the final URL is sanitized and
+   loopback previews are dropped). Every real transport MUST re-check each
+   redirect destination with `isSafeNavigationTarget` before following it, and
+   validate the RESOLVED address at connect time (a DNS name that resolves into
+   a private range is invisible to the predicate).
+5. **Root cause worth fixing at the source:** `intentSnapshot` is typed
+   `unknown` and the Intent contract constrains no schemes. Two separate
+   findings (evidence intent attribution; `javascript:`/`file:`/loopback intent
+   URLs) trace back to it. The resume flow now defends against both, but every
+   other consumer of an intent snapshot has the same exposure. Recommend
+   constraining the Intent contract as its own slice **before** Phase 3.7.
+
+**No real browser test is possible yet — this is by design, not a gap to
+debug.** Three ports still have only `NotImplemented*` implementations:
+`CdpTargetTransport`, `AuthStateProbe`, `NetworkObservationSource`. The only
+component that touches a real browser is `ChromeDaemonClient` (`/json/version`
+health check). `examples/` is empty; there is no runnable entrypoint. The 368
+tests prove classification/ordering/safety logic and nothing about the CDP wire
+protocol. Making a real browser run possible **is** the substance of Phase 3.7.
+
+**Ops notes that keep biting**
+
+- Codex posts a ZERO-findings result as an **issue** comment, not a PR review —
+  poll `issues/{n}/comments` as well as `pulls/{n}/comments` when watching.
+- Anchor review-poll cutoffs to real API timestamps, not assumptions.
+- The Desktop working copy is still checked out on the stale
+  `phase3.4-network-evidence` branch with unreliable git metadata; its *files*
+  track PR #5. Trust the files, do git/build work in a fresh clone (see the FS
+  hazard note below), and reset the Desktop copy to `origin/main` after merge.
 
 ## 2026-07-14 update (supersedes "Current state" below where they conflict)
 

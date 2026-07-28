@@ -56,11 +56,13 @@ export type ResumeBrowserRunDeps = {
   pageTargets?: Pick<PageTargetController, 'createTarget' | 'navigate'>;
   /** §9.5: return true ONLY when it is safe to recreate a stale target and retry the recheck. */
   recreationPolicy?: (context: SafeRecreationContext) => boolean;
-  /** Optional authoritative binding: maps the session surrogate to its owning
-   *  `{ runId, pageTargetRef }`. When provided, the flow verifies the supplied run + page
-   *  target belong to the session, closing cross-run target mixing (the checkpoint carries the
-   *  session ref but not the page target ref). */
-  sessionRegistry?: Pick<BrowserSessionRegistry, 'get'>;
+  /** REQUIRED authoritative binding: maps the session surrogate to its owning
+   *  `{ daemonId, runId, pageTargetRef }`. The checkpoint binds only the session (it carries no
+   *  page target), so without the registry there is nothing to authorize the supplied page
+   *  target against -- the flow would drive any well-shaped `page:*` ref. `update` is used to
+   *  REBIND the record after a successful stale-target recreation, so the next resume/
+   *  intervention authorizes the recreated ref rather than the dead one. */
+  sessionRegistry: Pick<BrowserSessionRegistry, 'get' | 'update'>;
 };
 
 export type ResumeBrowserRunInput = {
@@ -84,7 +86,15 @@ export type ResumeBrowserRunInput = {
   completeRun?: boolean;
 };
 
-export type ResumeBrowserRunOutcome = 'completed' | 'evidence-recorded' | 'recheck-failed' | 'evidence-not-recorded';
+export type ResumeBrowserRunOutcome =
+  | 'completed'
+  | 'evidence-recorded'
+  | 'recheck-failed'
+  /** Auth WAS confirmed (an `auth.rechecked` event is committed); the run failed afterwards on
+   *  discovery work. Kept distinct from `recheck-failed` so consumers don't read an ordinary
+   *  navigation failure as another login failure. */
+  | 'discovery-failed'
+  | 'evidence-not-recorded';
 
 export type ResumeBrowserRunResult = {
   outcome: ResumeBrowserRunOutcome;
@@ -127,23 +137,29 @@ export async function resumeBrowserRun(
   // Validate ref SHAPES + OWNERSHIP BEFORE the resume transition: throwing here (no checkpoint
   // change yet) lets the caller fix the input and retry. After resumeRun commits to
   // running_after_resume, a re-resume is rejected, so a late throw would strand the run.
-  guardSurrogateSessionId('browserSessionRef', input.browserSessionRef);
-  guardPageTargetRef('pageTargetRef', String(input.pageTargetRef));
+  //
+  // The guards RETURN the canonical strings and those are the ONLY values used from here on
+  // (K8): a caller could pass an object whose stateful `toString()` yields the authorized ref
+  // during validation and a foreign one once browser work starts, so the raw input refs are
+  // never re-read.
+  const sessionRef = guardSurrogateSessionId('browserSessionRef', input.browserSessionRef);
+  const inputTargetRef = guardPageTargetRef('pageTargetRef', String(input.pageTargetRef)) as string;
 
-  // OWNERSHIP (I1/J1): the checkpoint carries only the session ref, so run + page-target
-  // ownership is verified against the registry (session -> { daemonId, runId, pageTargetRef })
-  // when one is provided. FAIL CLOSED: the record must exist, own this run, AND carry a page
-  // target that EXACTLY equals the supplied one -- a record with no bound target does NOT
-  // authorize an arbitrary target. Rejected BEFORE transitioning (retryable), like a malformed
-  // ref. The record is captured for the recreation daemon check (J5) below.
-  const sessionRecord = deps.sessionRegistry?.get(input.browserSessionRef);
-  if (deps.sessionRegistry) {
-    const ownsRun = sessionRecord !== undefined && sessionRecord.runId === input.runId;
-    const ownsTarget =
-      sessionRecord?.pageTargetRef !== undefined && String(sessionRecord.pageTargetRef) === String(input.pageTargetRef);
-    if (!ownsRun || !ownsTarget) {
-      throw new Error('browser session does not own this run / page target');
-    }
+  // OWNERSHIP (I1/J1/K1): the checkpoint carries only the session ref, so run + page-target
+  // ownership is verified against the registry (session -> { daemonId, runId, pageTargetRef }).
+  // The registry is REQUIRED -- without it nothing authorizes the supplied target and any
+  // well-shaped `page:*` ref would drive recheck/navigation/capture. FAIL CLOSED: the record
+  // must exist, own this run, AND carry a page target that EXACTLY equals the supplied one.
+  // Rejected BEFORE transitioning (retryable), like a malformed ref. The record is also used
+  // for the recreation daemon check (J5) below.
+  if (!deps.sessionRegistry || typeof deps.sessionRegistry.get !== 'function') {
+    throw new Error('a browser session registry is required to authorize the resume page target');
+  }
+  const sessionRecord = deps.sessionRegistry.get(sessionRef);
+  const ownsRun = sessionRecord !== undefined && sessionRecord.runId === input.runId;
+  const ownsTarget = sessionRecord?.pageTargetRef !== undefined && String(sessionRecord.pageTargetRef) === inputTargetRef;
+  if (!ownsRun || !ownsTarget) {
+    throw new Error('browser session does not own this run / page target');
   }
 
   // A duplicate/stale resume is rejected by the coordinator here (RuntimeCoordinatorError
@@ -159,10 +175,18 @@ export async function resumeBrowserRun(
   // current version (each successful transition advances it) -- otherwise a throw after
   // confirm/record would markFailed with a stale version, get rejected, and strand the run.
   let latestVersion = resumed.version;
+  /**
+   * Terminal failure. `phase` distinguishes a failure BEFORE the auth verdict (`auth`, the
+   * classic recheck failure) from one AFTER auth was already confirmed (`discovery`): the
+   * latter must not be recorded as `authRecheck: 'failed'` or reported as `recheck-failed`,
+   * because an `auth.rechecked` (passed) event is already committed and consumers would
+   * otherwise read an ordinary discovery failure as another login failure (K6).
+   */
   const failTerminally = async (
     code: string,
-    recheckCode: string,
+    failureCode: string,
     message: string,
+    phase: 'auth' | 'discovery' = 'auth',
   ): Promise<ResumeBrowserRunResult> => {
     const failed = await deps.coordinator.markFailed({
       runId: input.runId,
@@ -170,9 +194,17 @@ export async function resumeBrowserRun(
       now: input.now,
       code,
       message,
-      eventData: { stepId: 'auth_state_recheck', authRecheck: 'failed', recheckCode },
+      eventData:
+        phase === 'auth'
+          ? { stepId: 'auth_state_recheck', authRecheck: 'failed', recheckCode: failureCode }
+          : { stepId: 'discovering_network', authRecheck: 'passed', discoveryFailureCode: failureCode },
     });
-    return { outcome: 'recheck-failed', checkpoint: failed, recheckOk: false, recheckCode };
+    return {
+      outcome: phase === 'auth' ? 'recheck-failed' : 'discovery-failed',
+      checkpoint: failed,
+      recheckOk: phase !== 'auth',
+      recheckCode: failureCode,
+    };
   };
 
   // BIND the session to the resumed run authoritatively (I3). The checkpoint MUST carry a
@@ -180,20 +212,20 @@ export async function resumeBrowserRun(
   // is NOT permission to adopt a caller-supplied session (that would let a generic completed
   // intervention be resumed with another run's session). A differing ref is a cross-run mix.
   const boundSessionRef = resumed.browserSessionRef;
-  if (boundSessionRef === undefined || boundSessionRef !== input.browserSessionRef) {
+  if (boundSessionRef === undefined || boundSessionRef !== sessionRef) {
     return failTerminally('auth-recheck-session-mismatch', 'session-mismatch', 'The supplied browser session is not bound to this run.');
   }
-  const sessionRef = boundSessionRef;
 
   // Every post-transition step is wrapped: a thrown error (rechecker/probe/controller) must
   // become a TERMINAL failure, not a stranded running_after_resume checkpoint (§9.4).
   try {
-    let activeTargetRef: PageTargetRef | string = input.pageTargetRef;
+    // The canonical, guard-returned string (K8) -- never the raw caller value.
+    let activeTargetRef: string = inputTargetRef;
     let snapshot = snapshotRecheck(
       await deps.rechecker.recheck({
         runId: input.runId,
         browserSessionRef: sessionRef,
-        pageTargetRef: input.pageTargetRef,
+        pageTargetRef: activeTargetRef,
         targetUrl: input.targetUrl,
         now: input.now,
       }),
@@ -227,12 +259,17 @@ export async function resumeBrowserRun(
         targetUrl: input.targetUrl,
         now: input.now,
       });
-      activeTargetRef = created.pageTargetRef;
+      // The recreated ref must itself be a well-formed page ref before anything uses it.
+      activeTargetRef = guardPageTargetRef('recreatedPageTargetRef', String(created.pageTargetRef)) as string;
+      // REBIND the registry to the recreated target (K3): the record still points at the dead
+      // stale ref, so a later resume/intervention would be rejected by the exact-ownership check
+      // while the registry-approved old target is unusable. The registry stays authoritative.
+      deps.sessionRegistry.update({ sessionId: sessionRef, pageTargetRef: activeTargetRef, now: input.now });
       snapshot = snapshotRecheck(
         await deps.rechecker.recheck({
           runId: input.runId,
           browserSessionRef: sessionRef,
-          pageTargetRef: created.pageTargetRef,
+          pageTargetRef: activeTargetRef,
           targetUrl: input.targetUrl,
           now: input.now,
         }),
@@ -276,7 +313,18 @@ export async function resumeBrowserRun(
     if (deps.pageTargets?.navigate && typeof input.targetUrl === 'string' && input.targetUrl.length > 0) {
       const navResult = await deps.pageTargets.navigate({ pageTargetRef: captureTargetRef, url: input.targetUrl, now: input.now });
       if (!navResult || navResult.ok !== true) {
-        return failTerminally('auth-recheck-discovery-nav-failed', 'discovery-nav-failed', 'The post-recheck discovery navigation did not succeed.');
+        // ABORT the window we just opened (K4): the run is terminal, so leaving it active would
+        // keep a buffering transport accumulating traffic and expose stale observations to a
+        // later stop(). Then fail in the DISCOVERY phase (K6) -- auth already passed.
+        if (deps.session.abort) {
+          await deps.session.abort({ runId: input.runId, pageTargetRef: captureTargetRef, now: input.now });
+        }
+        return failTerminally(
+          'discovery-navigation-failed',
+          'discovery-nav-failed',
+          'The post-recheck discovery navigation did not succeed.',
+          'discovery',
+        );
       }
     }
     const capture = await runBrowserNetworkCaptureFlow(
@@ -310,6 +358,14 @@ export async function resumeBrowserRun(
     // so a multi-step run stays `running` after recording unless completeRun was requested.
     if (input.completeRun !== true) {
       return { outcome: 'evidence-recorded', checkpoint: capture.checkpoint, recheckOk: true, capture };
+    }
+    // A capture can be `recorded` yet carry NO evidence (collect returned nothing, or every
+    // observation was mismatched/unsafe/unmappable/normalized away) -- an empty normalization
+    // has no error diagnostic. Completing an acquisition that produced zero discovery evidence
+    // would be a false success, so require at least one evidence item before the terminal
+    // transition (K5); otherwise the run stays active for a retry / next step.
+    if (capture.evidenceCount < 1) {
+      return { outcome: 'evidence-not-recorded', checkpoint: capture.checkpoint, recheckOk: true, capture };
     }
     const final = await deps.coordinator.markCompleted({
       runId: input.runId,

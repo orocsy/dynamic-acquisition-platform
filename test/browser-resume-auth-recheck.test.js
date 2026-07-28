@@ -147,3 +147,29 @@ test('detector-backed recheck allowlists the boundary kind in diagnostics', asyn
   const r2 = await new DetectorBackedAuthRechecker(probeOf({ navigation: { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status: 200 } }), known).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
   assert.equal(r2.diagnostics[0].boundaryKind, 'mfa-required');
 });
+
+// Codex re-review of PR #5 round 4 (K2): a probe that returns an ok navigation for a DIFFERENT
+// page must not authenticate the requested one (concurrent-page result mixing).
+test('recheck requires the observed navigation to be the requested target', async () => {
+  const otherPageNav = { ok: true, pageTargetRef: 'page:OTHER', state: 'ready', diagnostics: [], status: 200 };
+  const r = await new DetectorBackedAuthRechecker(probeOf({ navigation: otherPageNav })).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'still-unauthorized');
+  assert.equal(r.diagnostics[0].code, 'auth-recheck-target-not-observed');
+  // the matching target still passes
+  const sameNav = { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status: 200 };
+  const ok = await new DetectorBackedAuthRechecker(probeOf({ navigation: sameNav })).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(ok.ok, true);
+});
+
+// Codex re-review of PR #5 round 4 (K7): the deadline ABORTS the probe so a real transport can
+// tear down its in-flight work instead of leaking it.
+test('an expired recheck deadline aborts the probe signal', async () => {
+  let aborted = false;
+  const hanging = {
+    probe: (input) => new Promise(() => { input.signal?.addEventListener('abort', () => { aborted = true; }); }),
+  };
+  const r = await new DetectorBackedAuthRechecker(hanging, undefined, 15).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(r.code, 'recheck-timeout');
+  assert.equal(aborted, true, 'the probe signal must be aborted when the deadline wins');
+});

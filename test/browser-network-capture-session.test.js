@@ -196,3 +196,23 @@ test('a failed re-start invalidates the previously active window', async () => {
   // the window must no longer be active -> stop() rejects rather than collecting the stale buffer
   await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
 });
+
+// Codex re-review of PR #5 round 4 (K4): abort() closes an opened window WITHOUT collecting,
+// tells the source to discard its buffer, and makes a later stop() invalid.
+test('abort() discards the window without collecting', async () => {
+  const calls = [];
+  const source = {
+    beginCapture: () => calls.push('begin'),
+    abortCapture: () => calls.push('abort'),
+    collect: async () => { calls.push('collect'); return []; },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(calls, ['begin', 'abort']); // never collected
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+  assert.deepEqual(await session.listObservations('run_1'), []);
+  // aborting an unopened window is a harmless no-op (no source call)
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:never' });
+  assert.deepEqual(calls, ['begin', 'abort']);
+});

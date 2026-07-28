@@ -111,9 +111,22 @@ export class FakeBrowserAuthRechecker implements BrowserAuthRechecker {
  * The upstream port that supplies what a real recheck observes for a target (a navigation
  * result + captured observations + a page-text preview). The real CDP transport is DEFERRED
  * (exactly as in 3.2-3.4); a fake supplies fixtures in tests.
+ *
+ * `signal` is the CANCELLATION hook: when the rechecker's deadline expires it aborts the
+ * signal, and a real transport MUST tear down its in-flight navigation/listeners/socket rather
+ * than leaking them for the rest of the process (a timed-out recheck otherwise fails the run
+ * while its CDP work stays live). A fixture probe may ignore it.
  */
+export type AuthStateProbeInput = {
+  runId: string;
+  browserSessionRef: string;
+  pageTargetRef?: string;
+  targetUrl?: string;
+  signal?: AbortSignal;
+};
+
 export interface AuthStateProbe {
-  probe(input: { runId: string; browserSessionRef: string; pageTargetRef?: string; targetUrl?: string }): Promise<{
+  probe(input: AuthStateProbeInput): Promise<{
     navigation?: BrowserNavigationResult;
     observations?: BrowserObservation[];
     pageTextPreview?: string;
@@ -175,28 +188,40 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
   async recheck(input: BrowserAuthRecheckInput): Promise<BrowserAuthRecheckResult> {
     guardRecheckInput(input);
 
+    // The requested target, resolved ONCE to an immutable string (a caller could pass an object
+    // with a stateful toString()); every comparison below uses this snapshot.
+    const requestedTargetRef = input.pageTargetRef === undefined ? undefined : String(input.pageTargetRef);
+
     // Enforce a deadline: a transport promise that never settles must not hang the API after
     // the checkpoint has entered running_after_resume — it becomes a structured recheck-timeout.
+    // The probe is also ABORTED on timeout so a real transport tears its work down instead of
+    // leaking an in-flight navigation/socket for the rest of the process.
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
     let observed: Awaited<ReturnType<AuthStateProbe['probe']>>;
     try {
       const probing = this.#probe.probe({
         runId: input.runId,
         browserSessionRef: input.browserSessionRef,
-        pageTargetRef: input.pageTargetRef === undefined ? undefined : String(input.pageTargetRef),
+        pageTargetRef: requestedTargetRef,
         targetUrl: input.targetUrl,
+        signal: controller.signal,
       });
+      // Never let the losing probe promise surface as an unhandled rejection after the race.
+      probing.catch(() => {});
       const timeout = new Promise<typeof PROBE_TIMEOUT>((resolve) => {
         timer = setTimeout(() => resolve(PROBE_TIMEOUT), this.#timeoutMs);
       });
       const raced = await Promise.race([probing, timeout]);
       if (raced === PROBE_TIMEOUT) {
+        controller.abort();
         return authRecheckFailure('recheck-timeout', [{ level: 'warning', code: 'auth-recheck-probe-timeout' }]);
       }
       observed = raced;
     } catch (error) {
       // A probe transport failure is not an auth verdict; map a known target-stale error so the
       // flow's recreation path stays reachable, else fail safe as session-stale (value-free).
+      controller.abort();
       return authRecheckFailure(probeErrorCode(error), [{ level: 'warning', code: 'auth-recheck-probe-failed' }]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
@@ -232,6 +257,14 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
       return authRecheckFailure('still-unauthorized', [{ level: 'info', code: 'auth-recheck-target-not-usable' }]);
     }
 
-    return { ok: true, confidence: 0.9, ...(input.pageTargetRef !== undefined ? { pageTargetRef: input.pageTargetRef } : {}), diagnostics: [] };
+    // BIND the verdict to the page we were asked about: a probe that mixes results across
+    // concurrent pages could return an ok navigation for a DIFFERENT target, which would
+    // authenticate a page that was never actually rechecked. The observed navigation's target
+    // must equal the requested one (when a target was requested).
+    if (requestedTargetRef !== undefined && String(navigation.pageTargetRef) !== requestedTargetRef) {
+      return authRecheckFailure('still-unauthorized', [{ level: 'info', code: 'auth-recheck-target-not-observed' }]);
+    }
+
+    return { ok: true, confidence: 0.9, ...(requestedTargetRef !== undefined ? { pageTargetRef: requestedTargetRef } : {}), diagnostics: [] };
   }
 }

@@ -23,6 +23,14 @@ export interface NetworkCaptureSession {
   start(input: StartNetworkCaptureInput): Promise<void>;
   stop(input: StopNetworkCaptureInput): Promise<NetworkCaptureResult>;
   listObservations(runId: string): Promise<BrowserObservation[]>;
+  /**
+   * Close an opened capture window WITHOUT collecting or storing anything. Used when the work
+   * the window was opened for cannot proceed (e.g. the post-recheck discovery navigation
+   * failed): leaving the window active would keep a buffering transport accumulating traffic
+   * for a run that is already terminal, and expose those stale observations to a later stop().
+   * Optional so an existing custom session stays compatible; the flow calls it when present.
+   */
+  abort?(input: StopNetworkCaptureInput): Promise<void>;
 }
 
 /**
@@ -39,6 +47,9 @@ export interface NetworkCaptureSession {
 export interface NetworkObservationSource {
   collect(input: { runId: string; pageTargetRef: string }): Promise<readonly BrowserObservation[]>;
   beginCapture?(input: { runId: string; pageTargetRef: string }): void | Promise<void>;
+  /** Counterpart to `beginCapture`: stop capturing and DISCARD the buffered window without
+   *  collecting it (the session's `abort` path). Optional; a fixture source ignores it. */
+  abortCapture?(input: { runId: string; pageTargetRef: string }): void | Promise<void>;
 }
 
 export class NotImplementedNetworkObservationSource implements NetworkObservationSource {
@@ -174,6 +185,19 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     const existing = this.#observations.get(input.runId) ?? [];
     this.#observations.set(input.runId, [...existing, ...observations]);
     return { observations, diagnostics };
+  }
+
+  /**
+   * Close the window without collecting: the active key is dropped FIRST (so a later stop()
+   * is rejected even if the source's teardown throws), then the source is told to discard its
+   * buffer. Nothing is stored or returned — an aborted window contributes no observations.
+   */
+  async abort(input: StopNetworkCaptureInput): Promise<void> {
+    const key = this.#key(input.runId, input.pageTargetRef);
+    const hadWindow = this.#active.delete(key);
+    if (hadWindow && this.#source.abortCapture) {
+      await this.#source.abortCapture({ runId: input.runId, pageTargetRef: String(input.pageTargetRef) });
+    }
   }
 
   async listObservations(runId: string): Promise<BrowserObservation[]> {

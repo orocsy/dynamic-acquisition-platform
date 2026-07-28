@@ -173,3 +173,45 @@ test('an expired recheck deadline aborts the probe signal', async () => {
   assert.equal(r.code, 'recheck-timeout');
   assert.equal(aborted, true, 'the probe signal must be aborted when the deadline wins');
 });
+
+// Codex re-review of PR #5 round 5: the probe (and the verdict binding) must use the EXACT
+// canonical string the guard validated. A caller object with a stateful toString() used to be
+// converted twice -- validated as one ref, probed as another -- so the recheck could succeed
+// against a substituted, never-validated page.
+test('rechecker probes the exact ref the guard validated (stateful toString cannot swap pages)', async () => {
+  const seen = [];
+  const probe = {
+    probe: async (i) => {
+      seen.push(i.pageTargetRef);
+      return { navigation: { ok: true, pageTargetRef: i.pageTargetRef, state: 'ready', diagnostics: [], status: 200 } };
+    },
+  };
+  let conversions = 0;
+  const shifty = { toString() { conversions += 1; return conversions === 1 ? 'page:t-1' : 'page:t-2'; } };
+  const result = await new DetectorBackedAuthRechecker(probe).recheck({
+    runId: 'r', browserSessionRef: 'session:a', pageTargetRef: shifty, targetUrl: 'https://app.example.com/home',
+  });
+  assert.deepEqual(seen, ['page:t-1']); // the validated ref, not a later toString() product
+  assert.equal(result.ok, true);
+  assert.equal(result.pageTargetRef, 'page:t-1');
+});
+
+// Same round-5 discipline for the SESSION ref: the surrogate guard's predicate regexes coerce
+// an object per test, so validation and use could see different toString() products. The guard
+// now snapshots once and the probe receives that exact string.
+test('rechecker probes the exact session ref the guard validated (stateful toString)', async () => {
+  const seen = [];
+  const probe = {
+    probe: async (i) => {
+      seen.push(i.browserSessionRef);
+      return { navigation: { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status: 200 } };
+    },
+  };
+  let conversions = 0;
+  const shifty = { toString() { conversions += 1; return conversions === 1 ? 'session:legit-1' : 'session:evil-1'; } };
+  const result = await new DetectorBackedAuthRechecker(probe).recheck({
+    runId: 'r', browserSessionRef: shifty, pageTargetRef: 'page:t-1',
+  });
+  assert.deepEqual(seen, ['session:legit-1']); // the validated ref, never a later product
+  assert.equal(result.ok, true);
+});

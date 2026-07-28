@@ -416,19 +416,25 @@ test('a resume with no checkpoint-bound session fails terminally', async () => {
   assert.equal(result.checkpoint.status, 'failed');
 });
 
-// Codex re-review of PR #5 round 2 (I2): a throw AFTER confirmResumeAuthRecheck advanced the
-// version -> the terminal markFailed must use the LATEST version, else it is rejected/stranded.
-test('a throw after confirm still fails terminally (uses the latest version)', async () => {
-  const { coordinator } = makeCoordinator();
+// Codex re-review of PR #5 round 2 (I2) + round 5 (K6): a throw AFTER confirmResumeAuthRecheck
+// advanced the version -> the terminal markFailed must use the LATEST version, else it is
+// rejected/stranded. And because the PASSED auth event is already committed, the failure must
+// be reported as a DISCOVERY failure -- `recheck-failed` here would contradict the event log.
+test('a throw after confirm fails terminally as a DISCOVERY failure (latest version)', async () => {
+  const { checkpointStore, coordinator } = makeCoordinator();
   const { requestId, completed } = await toCompletedIntervention(coordinator);
   const session = { start: async () => { throw new Error('start blew up after confirm'); }, stop: async () => ({ observations: [], diagnostics: [] }), listObservations: async () => [] };
   const result = await resumeBrowserRun(
     { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, sessionRegistry: defaultRegistry() },
     { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', now: NOW },
   );
-  assert.equal(result.outcome, 'recheck-failed');
-  assert.equal(result.recheckCode, 'recheck-error');
+  assert.equal(result.outcome, 'discovery-failed');
+  assert.equal(result.recheckOk, true); // auth DID pass; only discovery failed
+  assert.equal(result.recheckCode, 'discovery-error');
   assert.equal(result.checkpoint.status, 'failed');
+  const failedEvent = (await checkpointStore.listEvents('run_ac_001')).find((e) => e.type === 'run.failed');
+  assert.equal(failedEvent.data.authRecheck, 'passed'); // consistent with the committed auth.rechecked
+  assert.equal(failedEvent.data.stepId, 'discovering_network');
 });
 
 // Codex re-review of PR #5 round 2 (I5, I6): a discovery navigation runs inside the fresh
@@ -485,4 +491,71 @@ test('a failed discovery navigation aborts the opened capture window', async () 
   );
   assert.equal(result.outcome, 'discovery-failed');
   assert.deepEqual(calls, ['start', 'abort']); // window opened then aborted; never stopped/collected
+});
+
+// Codex re-review of PR #5 round 5 (K4): a REJECTED navigate() promise must take the same
+// abort-then-discovery-failure path as an ok:false result -- surfacing it to the generic catch
+// used to leave the just-opened window buffering while the run went terminal.
+test('a REJECTED discovery navigation aborts the window and fails in the discovery phase', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const calls = [];
+  const session = {
+    start: async () => calls.push('start'),
+    abort: async () => calls.push('abort'),
+    stop: async () => { calls.push('stop'); return { observations: [], diagnostics: [] }; },
+    listObservations: async () => [],
+  };
+  const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => { throw new Error('target vanished after recheck'); } };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+  );
+  assert.equal(result.outcome, 'discovery-failed');
+  assert.equal(result.recheckCode, 'discovery-nav-failed');
+  assert.deepEqual(calls, ['start', 'abort']); // aborted, never stopped/collected
+});
+
+// Codex re-review of PR #5 round 5 (K9): navigation success is BOUND to the requested target.
+// A pageTargets implementation mixing results across concurrent pages could answer ok for a
+// DIFFERENT page; accepting it would run capture against a target that was never navigated.
+test('discovery navigation success for a DIFFERENT target is a failure (bound to requested page)', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const calls = [];
+  const session = {
+    start: async () => calls.push('start'),
+    abort: async () => calls.push('abort'),
+    stop: async () => { calls.push('stop'); return { observations: [], diagnostics: [] }; },
+    listObservations: async () => [],
+  };
+  const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => ({ ok: true, pageTargetRef: 'page:other', state: 'ready', diagnostics: [] }) };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+  );
+  assert.equal(result.outcome, 'discovery-failed');
+  assert.equal(result.recheckCode, 'discovery-nav-failed');
+  assert.deepEqual(calls, ['start', 'abort']); // the mismatched success never reaches capture
+});
+
+// Round 5 hardening alongside K4: if the capture flow's own stop() throws, the window opened
+// by start() is still live -- the generic catch must abort it before the terminal markFailed.
+test('a throw inside the capture flow aborts the still-open window and fails as discovery', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const calls = [];
+  const session = {
+    start: async () => calls.push('start'),
+    abort: async () => calls.push('abort'),
+    stop: async () => { calls.push('stop'); throw new Error('transport died mid-stop'); },
+    listObservations: async () => [],
+  };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com', now: NOW },
+  );
+  assert.equal(result.outcome, 'discovery-failed');
+  assert.equal(result.recheckCode, 'discovery-error');
+  assert.deepEqual(calls, ['start', 'stop', 'abort']); // stop failed -> abort before markFailed
 });

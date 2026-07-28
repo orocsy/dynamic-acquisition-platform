@@ -79,11 +79,20 @@ export function browserAuthRecheckMessage(code: BrowserAuthRecheckFailureCode): 
   return FAILURE_MESSAGES[code];
 }
 
-function guardRecheckInput(input: BrowserAuthRecheckInput): void {
+// Returns the CANONICAL refs produced during validation. Callers MUST use these snapshots
+// instead of re-reading the input fields: a caller can pass an object whose stateful
+// toString() yields the validated ref once and a different -- never-validated -- ref on a
+// second conversion, silently swapping which session/page the recheck verdict binds to.
+function guardRecheckInput(input: BrowserAuthRecheckInput): {
+  browserSessionRef: string;
+  pageTargetRef: string | undefined;
+} {
   // Reject a transparent/unsafe session ref WITHOUT echoing it (BrowserPersistenceError);
   // a stale/rogue pageTargetRef must be the page:<id> shape or absent.
-  guardSurrogateSessionId('browserSessionRef', input.browserSessionRef);
-  guardPageTargetRef('pageTargetRef', input.pageTargetRef === undefined ? undefined : String(input.pageTargetRef));
+  const browserSessionRef = guardSurrogateSessionId('browserSessionRef', input.browserSessionRef);
+  const pageTargetRef = input.pageTargetRef === undefined ? undefined : String(input.pageTargetRef);
+  guardPageTargetRef('pageTargetRef', pageTargetRef);
+  return { browserSessionRef, pageTargetRef };
 }
 
 /**
@@ -186,11 +195,10 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
   }
 
   async recheck(input: BrowserAuthRecheckInput): Promise<BrowserAuthRecheckResult> {
-    guardRecheckInput(input);
-
-    // The requested target, resolved ONCE to an immutable string (a caller could pass an object
-    // with a stateful toString()); every comparison below uses this snapshot.
-    const requestedTargetRef = input.pageTargetRef === undefined ? undefined : String(input.pageTargetRef);
+    // Both refs are the guard's OWN canonical snapshots -- resolved once, during validation.
+    // Re-reading the input fields here would be a second conversion, and a stateful
+    // toString() could make the probe check (and pass) a substituted session or page.
+    const { browserSessionRef, pageTargetRef: requestedTargetRef } = guardRecheckInput(input);
 
     // Enforce a deadline: a transport promise that never settles must not hang the API after
     // the checkpoint has entered running_after_resume — it becomes a structured recheck-timeout.
@@ -202,7 +210,7 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
     try {
       const probing = this.#probe.probe({
         runId: input.runId,
-        browserSessionRef: input.browserSessionRef,
+        browserSessionRef,
         pageTargetRef: requestedTargetRef,
         targetUrl: input.targetUrl,
         signal: controller.signal,

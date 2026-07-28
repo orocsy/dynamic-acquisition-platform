@@ -216,6 +216,15 @@ export async function resumeBrowserRun(
     return failTerminally('auth-recheck-session-mismatch', 'session-mismatch', 'The supplied browser session is not bound to this run.');
   }
 
+  // Set once confirmResumeAuthRecheck has COMMITTED the passed auth event: any later throw
+  // must be classified as a DISCOVERY failure (K6) -- emitting `authRecheck: 'failed'` /
+  // `recheck-failed` after that point would contradict the already-committed event stream.
+  let authConfirmed = false;
+  // The capture window opened by session.start, tracked until the capture flow's entry stop()
+  // closes it (or it is aborted): a throw while this is set must abort the window (K4), else a
+  // buffering transport keeps accumulating traffic for a run that is already terminal.
+  let openWindowRef: string | undefined;
+
   // Every post-transition step is wrapped: a thrown error (rechecker/probe/controller) must
   // become a TERMINAL failure, not a stranded running_after_resume checkpoint (§9.4).
   try {
@@ -293,6 +302,7 @@ export async function resumeBrowserRun(
       eventData: { authRecheck: 'passed', recheckConfidence: snapshot.confidence },
     });
     latestVersion = confirmed.version;
+    authConfirmed = true;
 
     // Capture drives ONLY the already-authorized target (J2): `activeTargetRef` is either the
     // registry-verified input ref or the target we recreated ourselves. A rechecker-returned
@@ -303,22 +313,34 @@ export async function resumeBrowserRun(
     // -- human-login / recheck traffic is never folded into it -- and a recreated target (a new
     // ref the caller never started) is covered.
     await deps.session.start({ runId: input.runId, pageTargetRef: captureTargetRef, now: input.now });
+    openWindowRef = captureTargetRef;
     // Perform the discovery navigation INSIDE the fresh window (when a navigator + target URL
     // are available), so a real buffering source has deterministic post-recheck traffic to
     // capture -- otherwise start()'s reset would be immediately followed by stop() with nothing
     // in between. A fixture source (tests) needs no navigator; its collect() returns fixtures.
     // navigate() reports a NORMAL failure as `ok: false` (not a throw) and marks the target
-    // stale, so an unchecked result would let a stale/zero-evidence run complete (J3): a failed
-    // navigation fails the run terminally BEFORE any capture.
+    // stale, so an unchecked result would let a stale/zero-evidence run complete (J3). A
+    // REJECTED navigate() (target became stale/unknown after recheck) takes the SAME path --
+    // surfacing it to the generic catch would otherwise skip the abort below (K4). Success is
+    // additionally BOUND to the requested target (K9): an implementation mixing results across
+    // concurrent pages could answer ok for a DIFFERENT page, and capture would then run against
+    // a target that was never navigated, normalizing unrelated buffered traffic as evidence.
     if (deps.pageTargets?.navigate && typeof input.targetUrl === 'string' && input.targetUrl.length > 0) {
-      const navResult = await deps.pageTargets.navigate({ pageTargetRef: captureTargetRef, url: input.targetUrl, now: input.now });
-      if (!navResult || navResult.ok !== true) {
+      let navigated = false;
+      try {
+        const navResult = await deps.pageTargets.navigate({ pageTargetRef: captureTargetRef, url: input.targetUrl, now: input.now });
+        navigated = !!navResult && navResult.ok === true && String(navResult.pageTargetRef) === captureTargetRef;
+      } catch {
+        navigated = false;
+      }
+      if (!navigated) {
         // ABORT the window we just opened (K4): the run is terminal, so leaving it active would
         // keep a buffering transport accumulating traffic and expose stale observations to a
         // later stop(). Then fail in the DISCOVERY phase (K6) -- auth already passed.
         if (deps.session.abort) {
           await deps.session.abort({ runId: input.runId, pageTargetRef: captureTargetRef, now: input.now });
         }
+        openWindowRef = undefined;
         return failTerminally(
           'discovery-navigation-failed',
           'discovery-nav-failed',
@@ -344,6 +366,8 @@ export async function resumeBrowserRun(
         captureId: input.captureId,
       },
     );
+    // The flow's entry stop() has closed the window; from here teardown is no longer owed.
+    openWindowRef = undefined;
     if (capture.recorded && capture.checkpoint) {
       latestVersion = capture.checkpoint.version;
     }
@@ -382,6 +406,22 @@ export async function resumeBrowserRun(
     // markFailed from the LATEST committed version (updated after confirm/record) -- using a
     // stale version here would itself be rejected. If markFailed still fails, it rethrows
     // (nothing safe remains).
-    return failTerminally('auth-recheck-error', 'recheck-error', 'The authenticated-state recheck could not be completed.');
+    //
+    // A window still open here (start succeeded but the capture flow's stop() never completed)
+    // is aborted BEST-EFFORT first (K4) so a buffering transport stops accumulating; an abort
+    // failure must never mask the markFailed below.
+    if (openWindowRef !== undefined && deps.session.abort) {
+      try {
+        await deps.session.abort({ runId: input.runId, pageTargetRef: openWindowRef, now: input.now });
+      } catch {
+        // best-effort only -- the terminal markFailed still runs
+      }
+    }
+    // Once auth was CONFIRMED the failure belongs to the DISCOVERY phase (K6): the passed
+    // auth.rechecked event is committed, so reporting `recheck-failed` here would contradict it
+    // and consumers would misread an ordinary discovery failure as another login failure.
+    return authConfirmed
+      ? failTerminally('discovery-error', 'discovery-error', 'The post-recheck network discovery could not be completed.', 'discovery')
+      : failTerminally('auth-recheck-error', 'recheck-error', 'The authenticated-state recheck could not be completed.');
   }
 }

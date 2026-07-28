@@ -319,3 +319,29 @@ test('start() fails and retains the debt when the teardown capability disappears
   const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
   assert.deepEqual(result.observations, []);
 });
+
+// Codex re-review of PR #5 round 9 (P2): the teardown debt is recorded BEFORE the capability
+// check -- a source that loses abortCapture between start() and abort() must still owe the
+// teardown, so a later restart repays it (or fails) instead of reopening over the stale
+// buffer.
+test('abort() records the debt even when the capability has already vanished', async () => {
+  let attempts = 0;
+  const source = {
+    collect: async () => [],
+    // NO beginCapture; abortCapture present at start() time...
+    abortCapture: async () => { attempts += 1; },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  delete source.abortCapture; // ...but gone by abort() time
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // no throw, but the debt is recorded
+  assert.equal(attempts, 0);
+  // the debt blocks a restart while the capability is still missing
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
+  // once the capability returns, the restart repays the debt and reopens
+  source.abortCapture = async () => { attempts += 1; };
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(attempts, 1);
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});

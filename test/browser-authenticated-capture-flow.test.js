@@ -198,7 +198,7 @@ test('a failed discovery navigation fails the run before capture', async () => {
   const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => ({ ok: false, pageTargetRef: 'page:t-1', state: 'stale', diagnostics: [] }) };
   const result = await resumeBrowserRun(
     { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
-    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', now: NOW },
   );
   // K6: auth ALREADY passed, so this is a discovery failure -- not another login failure
   assert.equal(result.outcome, 'discovery-failed');
@@ -451,10 +451,10 @@ test('discovery navigation runs in the fresh window and the completed step advan
   const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async (i) => { order.push('navigate'); navigations.push(i.url); return { ok: true, pageTargetRef: i.pageTargetRef, state: 'ready', diagnostics: [] }; } };
   const result = await resumeBrowserRun(
     { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
-    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', now: NOW },
   );
   assert.equal(result.outcome, 'evidence-recorded');
-  assert.deepEqual(navigations, ['https://api.example.com/account']);
+  assert.deepEqual(navigations, ['https://example.com/account']);
   assert.deepEqual(order, ['reset', 'navigate', 'collect']);
   assert.equal(result.checkpoint.lastCompletedStepId, 'discovering_network');
 });
@@ -489,7 +489,7 @@ test('a failed discovery navigation aborts the opened capture window', async () 
   const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => ({ ok: false, pageTargetRef: 'page:t-1', state: 'stale', diagnostics: [] }) };
   const result = await resumeBrowserRun(
     { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
-    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', now: NOW },
   );
   assert.equal(result.outcome, 'discovery-failed');
   assert.deepEqual(calls, ['start', 'abort']); // window opened then aborted; never stopped/collected
@@ -511,7 +511,7 @@ test('a REJECTED discovery navigation aborts the window and fails in the discove
   const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => { throw new Error('target vanished after recheck'); } };
   const result = await resumeBrowserRun(
     { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
-    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', now: NOW },
   );
   assert.equal(result.outcome, 'discovery-failed');
   assert.equal(result.recheckCode, 'discovery-nav-failed');
@@ -534,7 +534,7 @@ test('discovery navigation success for a DIFFERENT target is a failure (bound to
   const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => ({ ok: true, pageTargetRef: 'page:other', state: 'ready', diagnostics: [] }) };
   const result = await resumeBrowserRun(
     { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
-    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', now: NOW },
   );
   assert.equal(result.outcome, 'discovery-failed');
   assert.equal(result.recheckCode, 'discovery-nav-failed');
@@ -614,7 +614,7 @@ test('a session without abort tears the window down via stop() on navigation fai
   const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => ({ ok: false, pageTargetRef: 'page:t-1', state: 'stale', diagnostics: [] }) };
   const result = await resumeBrowserRun(
     { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
-    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', now: NOW },
   );
   assert.equal(result.outcome, 'discovery-failed');
   assert.equal(result.recheckCode, 'discovery-nav-failed');
@@ -679,4 +679,54 @@ test('a stateful daemonRef.id cannot pass the J5 check and recreate on a foreign
   assert.equal(conversions, 1); // toString ran ONCE, in the snapshot
   assert.equal(result.outcome, 'completed');
   assert.deepEqual(createdDaemonIds, ['daemon_1']); // the controller saw the SAME primitive the J5 check approved
+});
+
+// Codex re-review of PR #5 round 9 (P1): the post-recheck DISCOVERY NAVIGATION is bound to
+// the run's intent URL exactly like recreation -- ownership refs alone must not let a caller
+// drive the authenticated page to a substituted destination and capture its traffic.
+test('a substituted discovery URL fails before any navigation or capture window', async () => {
+  const { checkpointStore, coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator); // intent: https://example.com/account
+  const calls = [];
+  const session = {
+    start: async () => calls.push('start'),
+    abort: async () => calls.push('abort'),
+    stop: async () => { calls.push('stop'); return { observations: [], diagnostics: [] }; },
+    listObservations: async () => [],
+  };
+  const navigations = [];
+  const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async (i) => { navigations.push(i.url); return { ok: true, pageTargetRef: i.pageTargetRef, state: 'ready', diagnostics: [] }; } };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://evil.example.com/exfil', now: NOW },
+  );
+  assert.equal(result.outcome, 'discovery-failed');
+  assert.equal(result.recheckCode, 'discovery-url-not-intent');
+  assert.deepEqual(navigations, []); // the authenticated page was never driven anywhere
+  assert.deepEqual(calls, []); // no capture window was ever opened
+  const failedEvent = (await checkpointStore.listEvents('run_ac_001')).find((e) => e.type === 'run.failed');
+  assert.equal(failedEvent.data.authRecheck, 'passed'); // auth passed; the URL was the problem
+});
+
+// Codex re-review of PR #5 round 9 (P2): successful recreation CLOSES the dead stale target
+// (navigate only marks it stale) so repeated stale resumes do not accumulate live pages; a
+// failing close does not fail the recovered resume.
+test('recreation closes the dead stale target best-effort', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const recreatedObs = { ...safeObs('o1'), pageTargetRef: 'page:recreated-1' };
+  const session = new BrowserNetworkCaptureSession({ collect: async () => [recreatedObs] });
+  let recheckCalls = 0;
+  const rechecker = new FakeBrowserAuthRechecker(() => (++recheckCalls === 1 ? authRecheckFailure('target-stale') : { ok: true, confidence: 1, diagnostics: [] }));
+  const closed = [];
+  const pageTargets = {
+    createTarget: async () => ({ pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }),
+    closeTarget: async (ref) => { closed.push(ref); throw new Error('close hiccup'); }, // even a FAILING close is tolerated
+  };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker, session, pageTargets, recreationPolicy: () => true, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: { id: 'daemon_1', kind: 'local-chrome-daemon', mode: 'dedicated-daemon', healthUrlPreview: 'http://127.0.0.1:9222' }, sideEffectInProgress: false, now: NOW, completeRun: true },
+  );
+  assert.equal(result.outcome, 'completed');
+  assert.deepEqual(closed, ['page:t-1']); // the DEAD stale target was closed, not the replacement
 });

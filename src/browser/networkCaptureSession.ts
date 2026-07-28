@@ -231,8 +231,13 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     const expectedTarget = String(input.pageTargetRef);
     const key = this.#key(runId, expectedTarget);
     const hadWindow = this.#active.delete(key);
-    if (!this.#source.abortCapture) return;
+    // Record the debt BEFORE consulting the capability: an adaptive source can lose
+    // abortCapture between start() and abort(), and returning early without the debt would
+    // let a later restart (once the capability returns) reopen the window without ever
+    // discarding the still-live stale buffer. The debt must survive every timing of the
+    // capability's disappearance; only a SUCCESSFUL teardown (or a real reset) clears it.
     if (hadWindow) this.#pendingTeardown.add(key);
+    if (!this.#source.abortCapture) return;
     if (this.#pendingTeardown.has(key)) {
       await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
       this.#pendingTeardown.delete(key);

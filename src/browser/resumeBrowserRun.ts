@@ -51,9 +51,12 @@ export type ResumeBrowserRunDeps = {
   rechecker: BrowserAuthRechecker;
   session: NetworkCaptureSession;
   normalize?: (input: NetworkEvidenceNormalizerInput) => NetworkEvidenceNormalizerResult;
-  /** Optional; enables §9.5 stale-target recreation (createTarget) and the post-recheck
-   *  discovery navigation that generates fresh-window traffic before capture (navigate). */
-  pageTargets?: Pick<PageTargetController, 'createTarget' | 'navigate'>;
+  /** Optional; enables §9.5 stale-target recreation (createTarget, plus closeTarget so the
+   *  DEAD stale target is actually closed once its replacement exists -- navigate() only
+   *  marks a failed target stale, and without closeTarget repeated stale resumes accumulate
+   *  live browser pages) and the post-recheck discovery navigation that generates
+   *  fresh-window traffic before capture (navigate). Each method is used only if present. */
+  pageTargets?: Partial<Pick<PageTargetController, 'createTarget' | 'navigate' | 'closeTarget'>>;
   /** §9.5: return true ONLY when it is safe to recreate a stale target and retry the recheck. */
   recreationPolicy?: (context: SafeRecreationContext) => boolean;
   /** REQUIRED authoritative binding: maps the session surrogate to its owning
@@ -285,15 +288,15 @@ export async function resumeBrowserRun(
       sessionRecord !== undefined &&
       input.daemonRef !== undefined &&
       String(sessionRecord.daemonId) === String(input.daemonRef.id);
-    // §9.5 ORIGINAL-INTENT binding: the run's own intentSnapshot (carried on the RESUMED
+    // §9.5/§9.6 URL AUTHORITY: the run's own intentSnapshot (carried on the RESUMED
     // checkpoint, fixed at createRun time) is the only authority for the URL this acquisition
-    // was created to visit. Recreation is limited to EXACTLY that URL -- the caller-supplied
-    // targetUrl is otherwise unbound, so a caller holding valid run/session/page refs could
-    // recreate an authenticated target at a substituted destination and the policy would be
-    // approving the run's known-safe intent while the browser opens somewhere else. Fail
-    // closed when the intent target is missing or not a URL.
+    // was created to visit. BOTH url-consuming browser actions -- stale-target recreation and
+    // the post-recheck discovery navigation -- are limited to EXACTLY that URL: the
+    // caller-supplied targetUrl is otherwise unbound, so a caller holding valid
+    // run/session/page refs could point an authenticated page at a substituted destination.
+    // Fail closed when the intent target is missing or not a URL.
     const intentTarget = (resumed.intentSnapshot as { target?: { kind?: unknown; value?: unknown } } | null | undefined)?.target;
-    const recreationUrlIsOriginalIntent =
+    const targetUrlIsOriginalIntent =
       intentTarget !== null &&
       intentTarget !== undefined &&
       intentTarget.kind === 'url' &&
@@ -302,11 +305,11 @@ export async function resumeBrowserRun(
     if (
       snapshot.ok === false &&
       snapshot.code === 'target-stale' &&
-      deps.pageTargets &&
+      deps.pageTargets?.createTarget &&
       deps.recreationPolicy &&
       typeof input.targetUrl === 'string' &&
       input.targetUrl.length > 0 &&
-      recreationUrlIsOriginalIntent &&
+      targetUrlIsOriginalIntent &&
       input.daemonRef !== undefined &&
       recreationDaemonBound &&
       input.sideEffectInProgress === false &&
@@ -324,6 +327,18 @@ export async function resumeBrowserRun(
       // stale ref, so a later resume/intervention would be rejected by the exact-ownership check
       // while the registry-approved old target is unusable. The registry stays authoritative.
       deps.sessionRegistry.update({ sessionId: sessionRef, pageTargetRef: activeTargetRef, now: input.now });
+      // CLOSE the dead stale target now that its replacement exists and is registry-bound:
+      // navigate() only marks a failed target `stale`, so without an explicit close the raw
+      // browser page (and its controller mapping) stays live and repeated stale resumes
+      // accumulate targets. Best-effort: a close failure must not fail the resume that just
+      // recovered -- the replacement is already authoritative.
+      if (deps.pageTargets.closeTarget) {
+        try {
+          await deps.pageTargets.closeTarget(inputTargetRef);
+        } catch {
+          // best-effort only -- the stale target is already unusable and unregistered
+        }
+      }
       snapshot = snapshotRecheck(
         await deps.rechecker.recheck({
           runId: input.runId,
@@ -353,6 +368,27 @@ export async function resumeBrowserRun(
     });
     latestVersion = confirmed.version;
     authConfirmed = true;
+
+    // §9.6 URL AUTHORITY for the DISCOVERY NAVIGATION (same authority as recreation): when a
+    // navigator is present and a targetUrl was supplied, it must be the run's own intent URL.
+    // Ownership refs alone do not authorize a destination -- without this, any caller owning
+    // the run/session/page refs could drive the AUTHENTICATED page to an arbitrary URL and
+    // have the resulting traffic captured and normalized as this run's evidence. Checked
+    // BEFORE any capture window opens, and failed in the discovery phase (auth already
+    // passed). A fixture flow without a navigator is unaffected (nothing would navigate).
+    if (
+      deps.pageTargets?.navigate &&
+      typeof input.targetUrl === 'string' &&
+      input.targetUrl.length > 0 &&
+      !targetUrlIsOriginalIntent
+    ) {
+      return failTerminally(
+        'discovery-navigation-unauthorized',
+        'discovery-url-not-intent',
+        'The supplied discovery URL is not the acquisition intent URL.',
+        'discovery',
+      );
+    }
 
     // Capture drives ONLY the already-authorized target (J2): `activeTargetRef` is either the
     // registry-verified input ref or the target we recreated ourselves. A rechecker-returned

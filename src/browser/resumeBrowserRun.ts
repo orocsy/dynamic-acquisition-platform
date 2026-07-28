@@ -407,6 +407,12 @@ export async function resumeBrowserRun(
       snapshot.ok === false &&
       snapshot.code === 'target-stale' &&
       deps.pageTargets?.createTarget &&
+      // closeTarget is MANDATORY for recreation, not optional: the controller frees its
+      // transport resource ONLY through it, so entering recreation without a closer would
+      // leak the browser page on every failure path (and leave the dead original open).
+      // Without a closer, recreation is simply not attempted and the stale target fails the
+      // run normally -- fail closed rather than recover-and-leak.
+      deps.pageTargets.closeTarget &&
       deps.recreationPolicy &&
       typeof input.targetUrl === 'string' &&
       input.targetUrl.length > 0 &&

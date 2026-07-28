@@ -132,7 +132,9 @@ test('stale target with a safe recreation policy continues after a new target re
   let recheckCalls = 0;
   const rechecker = new FakeBrowserAuthRechecker(() => (++recheckCalls === 1 ? authRecheckFailure('target-stale') : { ok: true, confidence: 1, diagnostics: [] }));
   const created = [];
-  const pageTargets = { createTarget: async (input) => { created.push(input); return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; } };
+  // Round 13: closeTarget is now a MANDATORY recreation dependency (the controller frees its
+  // transport resource only through it), so a recreation fixture must supply one.
+  const pageTargets = { createTarget: async (input) => { created.push(input); return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; }, closeTarget: async () => {} };
   // J5: recreation requires the registry to bind the session to its owning daemon; the supplied
   // daemonRef.id must equal the record's daemonId. K3: the registry is REBOUND to the new ref.
   const sessionRegistry = defaultRegistry();
@@ -642,6 +644,7 @@ test('a stateful targetUrl getter cannot pass intent binding and then substitute
   const navigations = [];
   const pageTargets = {
     createTarget: async (i) => { created.push(i.targetUrl); return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; },
+    closeTarget: async () => {},
     navigate: async (i) => { navigations.push(i.url); return { ok: true, pageTargetRef: i.pageTargetRef, state: 'ready', diagnostics: [] }; },
   };
   let reads = 0;
@@ -673,7 +676,7 @@ test('a stateful daemonRef.id cannot pass the J5 check and recreate on a foreign
   let recheckCalls = 0;
   const rechecker = new FakeBrowserAuthRechecker(() => (++recheckCalls === 1 ? authRecheckFailure('target-stale') : { ok: true, confidence: 1, diagnostics: [] }));
   const createdDaemonIds = [];
-  const pageTargets = { createTarget: async (i) => { createdDaemonIds.push(i.daemonRef.id); return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; } };
+  const pageTargets = { createTarget: async (i) => { createdDaemonIds.push(i.daemonRef.id); return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; }, closeTarget: async () => {} };
   let conversions = 0;
   const shiftyId = { toString() { conversions += 1; return conversions === 1 ? DAEMON_ID : 'daemon_FOREIGN'; } };
   const result = await resumeBrowserRun(
@@ -915,6 +918,44 @@ test('an unsafe intent URL is refused even when the caller matches it exactly', 
       { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: unsafe, now: NOW },
     );
     assert.equal(result.outcome, 'recheck-failed', unsafe);
+    assert.equal(result.recheckCode, 'unsafe-target', unsafe);
+    assert.equal(recheckCalls, 0, `${unsafe} must never reach the navigating probe`);
+  }
+});
+
+// Codex re-review of PR #5 round 13 (P2): closeTarget is a MANDATORY recreation dependency.
+// With createTarget but no closer, recreation used to run and then silently leak the browser
+// page on every failure path, because the controller frees its transport resource only via
+// closeTarget. Now recreation is simply not attempted.
+test('recreation is not attempted when pageTargets has no closeTarget', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  let created = 0;
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker(authRecheckFailure('target-stale')), session: await startedSession([safeObs('o1')]),
+      pageTargets: { createTarget: async () => { created += 1; return { pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }; } }, // NO closeTarget
+      recreationPolicy: () => true, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: DAEMON_REF, sideEffectInProgress: false, now: NOW },
+  );
+  assert.equal(created, 0, 'no closer -> no recreation, rather than recover-and-leak');
+  assert.equal(result.outcome, 'recheck-failed');
+  assert.equal(result.recheckCode, 'target-stale');
+});
+
+// Codex re-review of PR #5 round 13 (P1): the IPv4/IPv6 UNSPECIFIED addresses are not
+// loopback, so isLoopbackHost let them through -- but as a destination 0.0.0.0 reaches the
+// local machine (including services bound to 127.0.0.1), so an authenticated probe could
+// still be pointed at the daemon's own CDP endpoint.
+test('an unspecified-address intent URL is refused as unsafe', async () => {
+  for (const unsafe of ['http://0.0.0.0:9222/json/version', 'http://0:9222/x', 'http://0x0:9222/x', 'http://[::]:9222/x', 'http://[0:0:0:0:0:0:0:0]:9222/x']) {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator, 'run_ac_001', { target: { kind: 'url', value: unsafe } });
+    let recheckCalls = 0;
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker(() => { recheckCalls += 1; return { ok: true, confidence: 1, diagnostics: [] }; }),
+        session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: unsafe, now: NOW },
+    );
     assert.equal(result.recheckCode, 'unsafe-target', unsafe);
     assert.equal(recheckCalls, 0, `${unsafe} must never reach the navigating probe`);
   }

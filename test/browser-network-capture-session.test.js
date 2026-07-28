@@ -423,3 +423,21 @@ test('a begin-capable window still owes cleanup after its reset hook disappears'
   await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
   await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
 });
+
+// Codex re-review of PR #5 round 13 (P2): the capture hooks are snapshotted BEFORE they are
+// invoked. A begin-only adaptive source that drops beginCapture during its own call used to
+// leave the opened window recorded as NOT buffer-backed, so a later abort created no debt and
+// a hookless restart could reactivate the key over the stale pre-boundary buffer.
+test('a hook removed during its own call still marks the window buffer-backed', async () => {
+  const source = {
+    collect: async () => [],
+    beginCapture() { delete source.beginCapture; }, // vanishes while opening the window
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // buffer-backed window
+  assert.equal(source.beginCapture, undefined);
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // owes cleanup, cannot repay
+  // the debt must block a restart that can neither reset nor tear down the stale buffer
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});

@@ -178,10 +178,18 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
       // source's begin/reset, and re-add the key ONLY after a successful reset -- so if
       // beginCapture rejects, a later stop() cannot collect the old, pre-boundary buffer. (A
       // fixture source omits beginCapture; the delete+add is then a no-op round-trip.)
+      // SNAPSHOT the hooks BEFORE invoking them. An adaptive source can remove a hook while
+      // its own call is still in flight, so re-reading `this.#source.*` afterwards could
+      // record NO cleanup obligation for a window that was in fact opened buffer-backed --
+      // and a later hookless restart would then reactivate the key over the stale
+      // pre-boundary buffer, contaminating discovery evidence.
+      const beginCapture = this.#source.beginCapture;
+      const abortCapture = this.#source.abortCapture;
+      const bufferBacked = Boolean(beginCapture || abortCapture);
       const wasActive = this.#active.delete(key);
-      if (this.#source.beginCapture) {
+      if (beginCapture) {
         try {
-          await this.#source.beginCapture({ runId, pageTargetRef: expectedTarget });
+          await beginCapture.call(this.#source, { runId, pageTargetRef: expectedTarget });
         } catch (error) {
           // A FAILED re-start of an ACTIVE window leaves the OLD source window possibly still
           // buffering, and the active key is already gone -- so nothing downstream could ever
@@ -221,8 +229,9 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
         await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
         this.#pendingTeardown.delete(key);
       }
-      // Record whether THIS window can owe a teardown, judged when it is opened.
-      if (this.#source.beginCapture || this.#source.abortCapture) this.#cleanupOwed.add(key);
+      // Record whether THIS window is buffer-backed, judged from the hooks that were present
+      // when it was OPENED -- never re-read from the mutable source after the reset call.
+      if (bufferBacked) this.#cleanupOwed.add(key);
       else this.#cleanupOwed.delete(key);
       this.#active.add(key);
     });

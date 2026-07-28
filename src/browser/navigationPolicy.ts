@@ -82,8 +82,26 @@ export function isSafeNavigationTarget(url: unknown): boolean {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
   if (parsed.username !== '' || parsed.password !== '') return false;
-  if (isLoopbackHost(parsed.hostname)) return false;
+  if (isLoopbackHost(parsed.hostname) || isUnspecifiedHost(parsed.hostname)) return false;
   return true;
+}
+
+/**
+ * The IPv4/IPv6 *unspecified* addresses (`0.0.0.0`, `::`). These are NOT loopback, so
+ * `isLoopbackHost` lets them through, but as a DESTINATION they reach the local machine on
+ * Linux — including services bound to `127.0.0.1` — so an authenticated probe pointed at
+ * `http://0.0.0.0:9222` would still reach the daemon's own CDP endpoint or another local
+ * service. `new URL` canonicalizes the alternate spellings (`0`, `0x0` -> `0.0.0.0`;
+ * `[0:0:0:0:0:0:0:0]` -> `[::]`), so matching the canonical forms is sufficient; the
+ * IPv4-mapped `::ffff:0:0` is covered explicitly.
+ *
+ * Deliberately NOT folded into `isLoopbackHost`: that predicate also gates
+ * `safeDaemonOrigin({ requireLoopback: true })`, where treating `0.0.0.0` as loopback would
+ * LOOSEN the daemon binding rather than tighten it.
+ */
+export function isUnspecifiedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.+$/, '').replace(/^\[|\]$/g, '');
+  return host === '0.0.0.0' || host === '::' || host === '::ffff:0:0' || host === '::ffff:0.0.0.0';
 }
 
 export function isSafeToRecreateTarget(input: SafeRecreationInput): boolean {

@@ -16,10 +16,10 @@ spec, and what is still deferred.
 |---|---|
 | Branch | `phase3.6-resume-auth-recheck` |
 | PR | #5 — **OPEN, not merged** as of 2026-07-28 |
-| Head | `018129f` (13 commits ahead of `main`, 0 behind) |
-| Tests | **354 pass / 0 fail** (`npm test`) |
+| Head | `f66e7a2` (15 commits ahead of `main`, 0 behind) |
+| Tests | **357 pass / 0 fail** (`npm test`) |
 | Gates | `npm run check` green; three independent adversarial probes green |
-| Review | codex loop at **12 rounds, 63 findings, all fixed**; round 13 requested against `018129f`, outstanding |
+| Review | codex loop at **13 rounds, 66 findings, all fixed**; round 14 requested against `f66e7a2`, outstanding |
 
 The merge is a **user action** — it has been permission-gated for every PR in
 this project (PRs #3 and #4 were merged by the user), and the review loop has
@@ -149,8 +149,8 @@ Both run before the first recheck, and both matter:
    session, and page refs does not authorize a *destination*. Fails with
    `url-not-intent`.
 2. **Safety** — the URL must also pass `navigationPolicy.isSafeNavigationTarget`
-   (absolute `http(s)` only, no userinfo, non-loopback). Fails with
-   `unsafe-target`.
+   (absolute `http(s)` only, no userinfo, and neither a loopback nor an
+   *unspecified* (`0.0.0.0`/`::`) host). Fails with `unsafe-target`.
 
 The second exists because `intentSnapshot` is typed `unknown` and the Intent
 contract constrains no schemes, so a run can legitimately carry
@@ -176,7 +176,7 @@ port, or a swapped scheme.
 
 ---
 
-## 5. The review loop: 12 rounds, 63 findings
+## 5. The review loop: 13 rounds, 66 findings
 
 | Round | Findings | Commit |
 |---|---|---|
@@ -192,6 +192,7 @@ port, or a swapped scheme.
 | 10 | 8 | `7d5aab2` |
 | 11 | 6 | `50c9e72` |
 | 12 | 4 | `018129f` |
+| 13 | 3 | `f66e7a2` |
 
 **The count did not converge monotonically, and that is informative.** Rounds
 8–9 added new machinery (teardown debts, close-on-failure paths, URL gates), and

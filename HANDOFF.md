@@ -14,10 +14,10 @@ one wherever they conflict.**
   `main`.**
 - **Phase 3.6 (browser-backed resume auth recheck, LLD §9) is IMPLEMENTED but
   NOT MERGED.** Branch `phase3.6-resume-auth-recheck` = **PR #5**, head
-  `018129f`, 13 commits ahead of `main`, 0 behind, MERGEABLE/CLEAN.
-- **354 tests pass**, `npm run check` green, three adversarial probes green.
-- The codex review loop has run **12 rounds / 63 findings, all fixed**. Round 13
-  was requested against `018129f` and had not returned when this was written.
+  `f66e7a2`, 15 commits ahead of `main`, 0 behind, MERGEABLE/CLEAN.
+- **357 tests pass**, `npm run check` green, three adversarial probes green.
+- The codex review loop has run **13 rounds / 66 findings, all fixed**. Round 14
+  was requested against `f66e7a2` and had not returned when this was written.
 - Merging is a **user action** (as it was for PRs #3 and #4) and the loop has
   not yet returned a clean round.
 
@@ -37,8 +37,8 @@ you read nothing else:
 2. **Trap worth memorising:** `x === undefined ? {} : { x }` reads the getter
    **twice** and stores the **second** value — it silently defeats a snapshot
    and looks completely idiomatic. Read each field into a local first.
-3. **The finding count did not converge monotonically** (9→7→5→8→4→4→3→2→3→8→6→4).
-   Rounds 10–12 were largely the reviewer auditing my *own* round-8/9 fixes, and
+3. **The finding count did not converge monotonically** (9→7→5→8→4→4→3→2→3→8→6→4→3).
+   Rounds 10–13 were largely the reviewer auditing my *own* round-8/9 fixes, and
    found a regression in one and a bug inside another. New defensive machinery
    is itself new attack surface and needs its own review pass.
 4. **Root cause worth fixing at the source:** `intentSnapshot` is typed
@@ -52,7 +52,7 @@ you read nothing else:
 debug.** Three ports still have only `NotImplemented*` implementations:
 `CdpTargetTransport`, `AuthStateProbe`, `NetworkObservationSource`. The only
 component that touches a real browser is `ChromeDaemonClient` (`/json/version`
-health check). `examples/` is empty; there is no runnable entrypoint. The 354
+health check). `examples/` is empty; there is no runnable entrypoint. The 357
 tests prove classification/ordering/safety logic and nothing about the CDP wire
 protocol. Making a real browser run possible **is** the substance of Phase 3.7.
 

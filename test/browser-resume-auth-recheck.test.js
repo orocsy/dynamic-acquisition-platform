@@ -215,3 +215,34 @@ test('rechecker probes the exact session ref the guard validated (stateful toStr
   assert.deepEqual(seen, ['session:legit-1']); // the validated ref, never a later product
   assert.equal(result.ok, true);
 });
+
+// Codex re-review of PR #5 round 10 (P2): an out-of-range/non-finite timeout must fall back
+// to the default. setTimeout silently clamps Infinity (and anything > 2^31-1) to ~1ms, which
+// would turn "effectively no deadline" into an instant recheck-timeout on every healthy run.
+test('an overflowing or non-finite recheck timeout falls back to the default', async () => {
+  const nav = { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status: 200 };
+  const slowProbe = { probe: async () => { await new Promise((r) => setTimeout(r, 30)); return { navigation: nav }; } };
+  for (const bad of [Infinity, Number.MAX_SAFE_INTEGER, 2_147_483_648, NaN, -1, 0]) {
+    const r = await new DetectorBackedAuthRechecker(slowProbe, undefined, bad).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+    assert.equal(r.ok, true, `timeout ${String(bad)} must fall back to the 30s default, not fire instantly`);
+  }
+});
+
+// Codex re-review of PR #5 round 10 (P2): the probe output is snapshotted once. A getter that
+// returns nothing to the detector and then a healthy navigation to the usability check must
+// not be able to assemble a passing verdict from two different probe results.
+test('a mutating probe result cannot assemble a passing verdict from two reads', async () => {
+  let reads = 0;
+  const healthy = { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status: 200 };
+  const shifty = {
+    probe: async () => ({
+      get navigation() { reads += 1; return reads === 1 ? undefined : healthy; },
+      observations: [],
+      pageTextPreview: '',
+    }),
+  };
+  const r = await new DetectorBackedAuthRechecker(shifty).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(reads, 1); // read exactly once
+  assert.equal(r.ok, false); // the single snapshot had no usable navigation
+  assert.equal(r.diagnostics[0].code, 'auth-recheck-target-not-usable');
+});

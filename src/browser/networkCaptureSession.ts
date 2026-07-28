@@ -126,10 +126,39 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
   // teardown (abortCapture) has not yet SUCCEEDED. Tracked separately from #active so a
   // rejected teardown stays retryable (see abort()).
   readonly #pendingTeardown = new Set<string>();
+  // Windows opened while the source ACTUALLY exposed abortCapture. Only these can owe a
+  // teardown: a source that never had the hook (the documented fixture shape -- `collect`
+  // only) has no buffer to discard, so charging it a debt would permanently block its
+  // restarts. This distinguishes "capability existed for this window and later vanished"
+  // from "capability never existed".
+  readonly #teardownCapable = new Set<string>();
+  // Per-key lifecycle lock: start/stop/abort for one window run strictly in sequence.
+  // Without it, an abortCapture still in flight can finish AFTER a concurrent start() has
+  // reset and re-activated the window, discarding the fresh source window while the active
+  // key stays set -- a later stop() would then collect from a torn-down window.
+  readonly #locks = new Map<string, Promise<unknown>>();
   readonly #observations = new Map<string, BrowserObservation[]>();
 
   constructor(source: NetworkObservationSource = new NotImplementedNetworkObservationSource()) {
     this.#source = source;
+  }
+
+  // Serialize `fn` behind any in-flight operation for `key` (running regardless of whether
+  // that one settled or threw), and drop the chain entry once this call is the tail.
+  async #withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.#locks.get(key) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    // The stored tail never rejects, so one failed operation cannot poison later waiters.
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#locks.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.#locks.get(key) === tail) this.#locks.delete(key);
+    }
   }
 
   async start(input: StartNetworkCaptureInput): Promise<void> {
@@ -141,32 +170,39 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     const runId = String(input.runId);
     const expectedTarget = String(input.pageTargetRef);
     const key = this.#key(runId, expectedTarget);
-    // INVALIDATE the window before resetting: even a RE-start of an already-active window must
-    // not leave the old key live if the reset fails. Drop the key first, run the source's
-    // begin/reset, and re-add the key ONLY after a successful reset -- so if beginCapture
-    // rejects, a later stop() cannot collect the old, pre-boundary buffer. (A fixture source
-    // omits beginCapture; the delete+add is then a no-op round-trip.)
-    this.#active.delete(key);
-    if (this.#source.beginCapture) {
-      await this.#source.beginCapture({ runId, pageTargetRef: expectedTarget });
-      // An ACTUAL successful reset supersedes any outstanding teardown debt: the source's
-      // buffer for this window was just dropped, so there is nothing stale left to discard.
-      this.#pendingTeardown.delete(key);
-    } else if (this.#pendingTeardown.has(key)) {
-      // No reset is possible (the source has no beginCapture), so an unpaid teardown debt
-      // means the stale pre-boundary buffer may still be live. REPAY it before reopening:
-      // otherwise this restart would mark the window active over that buffer and stop()
-      // could collect it. A rejected repayment keeps the debt and fails the start. If the
-      // teardown capability itself has DISAPPEARED (an adaptive source dropping abortCapture
-      // after its transport failed), nothing can prove the buffer was discarded -- fail the
-      // start and RETAIN the debt rather than silently activating over stale traffic.
-      if (!this.#source.abortCapture) {
-        throw new Error('capture window has an unpaid teardown debt and the source can neither reset nor abort');
+    return this.#withLock(key, async () => {
+      // INVALIDATE the window before resetting: even a RE-start of an already-active window
+      // must not leave the old key live if the reset fails. Drop the key first, run the
+      // source's begin/reset, and re-add the key ONLY after a successful reset -- so if
+      // beginCapture rejects, a later stop() cannot collect the old, pre-boundary buffer. (A
+      // fixture source omits beginCapture; the delete+add is then a no-op round-trip.)
+      this.#active.delete(key);
+      if (this.#source.beginCapture) {
+        await this.#source.beginCapture({ runId, pageTargetRef: expectedTarget });
+        // An ACTUAL successful reset supersedes any outstanding teardown debt: the source's
+        // buffer for this window was just dropped, so there is nothing stale left to discard.
+        this.#pendingTeardown.delete(key);
+      } else if (this.#pendingTeardown.has(key)) {
+        // No reset is possible (the source has no beginCapture), so an unpaid teardown debt
+        // means the stale pre-boundary buffer may still be live. REPAY it before reopening:
+        // otherwise this restart would mark the window active over that buffer and stop()
+        // could collect it. A rejected repayment keeps the debt and fails the start. If the
+        // teardown capability itself has DISAPPEARED (an adaptive source dropping
+        // abortCapture after its transport failed), nothing can prove the buffer was
+        // discarded -- fail the start and RETAIN the debt rather than silently activating
+        // over stale traffic. (A source that NEVER had abortCapture is never charged a debt,
+        // so it does not reach this branch and restarts normally.)
+        if (!this.#source.abortCapture) {
+          throw new Error('capture window has an unpaid teardown debt and the source can neither reset nor abort');
+        }
+        await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
+        this.#pendingTeardown.delete(key);
       }
-      await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
-      this.#pendingTeardown.delete(key);
-    }
-    this.#active.add(key);
+      // Record whether THIS window can owe a teardown, judged when it is opened.
+      if (this.#source.abortCapture) this.#teardownCapable.add(key);
+      else this.#teardownCapable.delete(key);
+      this.#active.add(key);
+    });
   }
 
   async stop(input: StopNetworkCaptureInput): Promise<NetworkCaptureResult> {
@@ -174,6 +210,7 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     const runId = String(input.runId);
     const expectedTarget = String(input.pageTargetRef);
     const key = this.#key(runId, expectedTarget);
+    return this.#withLock(key, async () => {
     if (!this.#active.has(key)) {
       throw new Error('network capture stop requires a prior start for this run/pageTargetRef');
     }
@@ -182,6 +219,7 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     // start' forever.
     const raw = await this.#source.collect({ runId, pageTargetRef: expectedTarget });
     this.#active.delete(key);
+    this.#teardownCapable.delete(key);
 
     const observations: BrowserObservation[] = [];
     const diagnostics: Record<string, unknown>[] = [];
@@ -212,6 +250,7 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     const existing = this.#observations.get(runId) ?? [];
     this.#observations.set(runId, [...existing, ...observations]);
     return { observations, diagnostics };
+    });
   }
 
   /**
@@ -230,18 +269,22 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     const runId = String(input.runId);
     const expectedTarget = String(input.pageTargetRef);
     const key = this.#key(runId, expectedTarget);
-    const hadWindow = this.#active.delete(key);
-    // Record the debt BEFORE consulting the capability: an adaptive source can lose
-    // abortCapture between start() and abort(), and returning early without the debt would
-    // let a later restart (once the capability returns) reopen the window without ever
-    // discarding the still-live stale buffer. The debt must survive every timing of the
-    // capability's disappearance; only a SUCCESSFUL teardown (or a real reset) clears it.
-    if (hadWindow) this.#pendingTeardown.add(key);
-    if (!this.#source.abortCapture) return;
-    if (this.#pendingTeardown.has(key)) {
-      await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
-      this.#pendingTeardown.delete(key);
-    }
+    return this.#withLock(key, async () => {
+      const hadWindow = this.#active.delete(key);
+      // Record the debt BEFORE consulting the CURRENT capability: an adaptive source can lose
+      // abortCapture between start() and abort(), and returning early without the debt would
+      // let a later restart (once the capability returns) reopen the window without ever
+      // discarding the still-live stale buffer. Only a window that was opened while the
+      // source HAD the hook can owe anything -- a source that never supported teardown holds
+      // no buffer to discard, and charging it would permanently block its restarts.
+      if (hadWindow && this.#teardownCapable.has(key)) this.#pendingTeardown.add(key);
+      this.#teardownCapable.delete(key);
+      if (!this.#source.abortCapture) return;
+      if (this.#pendingTeardown.has(key)) {
+        await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
+        this.#pendingTeardown.delete(key);
+      }
+    });
   }
 
   async listObservations(runId: string): Promise<BrowserObservation[]> {

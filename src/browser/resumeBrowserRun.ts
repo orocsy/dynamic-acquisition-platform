@@ -5,6 +5,7 @@ import type {
 } from '../runtime';
 import type { RunCheckpoint } from '../runtime';
 import { guardPageTargetRef, guardSurrogateSessionId } from './persistenceGuard';
+import { buildDaemonRef, daemonIdFromEndpoint, safeDaemonOrigin } from './daemonClient';
 import type { BrowserAuthRechecker, BrowserAuthRecheckResult } from './authRecheck';
 import { browserAuthRecheckMessage, isBrowserAuthRecheckFailureCode } from './authRecheck';
 import type { EvidenceRecordingCoordinator, BrowserNetworkCaptureFlowResult } from './browserCaptureFlow';
@@ -254,6 +255,19 @@ export async function resumeBrowserRun(
     }
   };
 
+  // Best-effort close of a target this flow itself created (§9.5 replacement). Used on every
+  // terminal path after recreation: the ORIGINAL stale target is closed at creation time, but
+  // if the retry recheck then fails (or anything later throws) the replacement would stay
+  // live, so repeated failed recreations would still accumulate browser pages.
+  const closeTargetQuietly = async (ref: string | undefined): Promise<void> => {
+    if (ref === undefined || !deps.pageTargets?.closeTarget) return;
+    try {
+      await deps.pageTargets.closeTarget(ref);
+    } catch {
+      // best-effort only -- never mask the terminal transition we are about to make
+    }
+  };
+
   // Set once confirmResumeAuthRecheck has COMMITTED the passed auth event: any later throw
   // must be classified as a DISCOVERY failure (K6) -- emitting `authRecheck: 'failed'` /
   // `recheck-failed` after that point would contradict the already-committed event stream.
@@ -262,6 +276,35 @@ export async function resumeBrowserRun(
   // closes it (or it is aborted): a throw while this is set must abort the window (K4), else a
   // buffering transport keeps accumulating traffic for a run that is already terminal.
   let openWindowRef: string | undefined;
+  // Set once §9.5 recreation created a REPLACEMENT target; declared out here so the terminal
+  // catch below can close it too.
+  let recreatedTargetRef: string | undefined;
+
+  // §9.5/§9.6 URL AUTHORITY, established BEFORE any browser work. The run's own
+  // intentSnapshot (on the RESUMED checkpoint, fixed at createRun) is the only authority for
+  // the URL this acquisition may visit; a caller-supplied targetUrl is otherwise unbound, so
+  // ownership of the run/session/page refs alone must never decide a destination.
+  //
+  // This is enforced BEFORE the first recheck, not after it: a real rechecker
+  // (DetectorBackedAuthRechecker) forwards targetUrl to its AuthStateProbe, which NAVIGATES
+  // the authenticated page to establish reachability. Checking only the later discovery
+  // navigation would leave that first navigation -- the unsafe browser action itself --
+  // already performed. Every url-consuming step (probe, recreation, discovery navigation)
+  // now sits behind this one gate. Fail closed when the intent target is missing/not a URL.
+  const intentTarget = (resumed.intentSnapshot as { target?: { kind?: unknown; value?: unknown } } | null | undefined)?.target;
+  const targetUrlIsOriginalIntent =
+    intentTarget !== null &&
+    intentTarget !== undefined &&
+    intentTarget.kind === 'url' &&
+    typeof intentTarget.value === 'string' &&
+    intentTarget.value === input.targetUrl;
+  if (typeof input.targetUrl === 'string' && input.targetUrl.length > 0 && !targetUrlIsOriginalIntent) {
+    return failTerminally(
+      'resume-url-unauthorized',
+      'url-not-intent',
+      'The supplied URL is not the acquisition intent URL.',
+    );
+  }
 
   // Every post-transition step is wrapped: a thrown error (rechecker/probe/controller) must
   // become a TERMINAL failure, not a stranded running_after_resume checkpoint (§9.4).
@@ -281,27 +324,37 @@ export async function resumeBrowserRun(
     // §9.5 safe target recreation: ONLY on target-stale, ONLY when a policy explicitly allows
     // it, a recreation controller is present, an intent URL is available, AND the caller
     // asserts NO side effect was in progress (an omitted/unknown value is NOT safe). Once only.
-    // The recreation daemon MUST be the session's own daemon (J5): the registry is required and
-    // its `daemonId` must equal the supplied `daemonRef.id`, so recreation can't run browser
-    // work on another session's daemon. Fail closed -- no registry / no match => no recreation.
-    const recreationDaemonBound =
-      sessionRecord !== undefined &&
-      input.daemonRef !== undefined &&
-      String(sessionRecord.daemonId) === String(input.daemonRef.id);
-    // §9.5/§9.6 URL AUTHORITY: the run's own intentSnapshot (carried on the RESUMED
-    // checkpoint, fixed at createRun time) is the only authority for the URL this acquisition
-    // was created to visit. BOTH url-consuming browser actions -- stale-target recreation and
-    // the post-recheck discovery navigation -- are limited to EXACTLY that URL: the
-    // caller-supplied targetUrl is otherwise unbound, so a caller holding valid
-    // run/session/page refs could point an authenticated page at a substituted destination.
-    // Fail closed when the intent target is missing or not a URL.
-    const intentTarget = (resumed.intentSnapshot as { target?: { kind?: unknown; value?: unknown } } | null | undefined)?.target;
-    const targetUrlIsOriginalIntent =
-      intentTarget !== null &&
-      intentTarget !== undefined &&
-      intentTarget.kind === 'url' &&
-      typeof intentTarget.value === 'string' &&
-      intentTarget.value === input.targetUrl;
+    // The recreation daemon MUST be the session's own daemon (J5). Checking only `id` was not
+    // enough: the whole caller-supplied ref is handed to createTarget and on to the transport,
+    // so a caller could keep the registry-approved id while swapping `healthUrlPreview` to a
+    // DIFFERENT (even loopback) endpoint or changing `mode`, and recreation would run against
+    // a daemon the registry never authorized. Bind every transport-relevant field:
+    //   - `kind` must be the only supported literal;
+    //   - `mode` must equal the registry record's mode;
+    //   - `healthUrlPreview` must be a safe loopback origin AND must DERIVE the registry's
+    //     daemonId (`daemonIdFromEndpoint` is how 3.2 mints ids), which is what actually ties
+    //     the endpoint to the approved daemon rather than trusting the id string alone.
+    // Fail closed -- no registry / any mismatch / an unparseable endpoint => no recreation.
+    const recreationDaemonBound = (():
+      | { ok: true; daemonRef: BrowserDaemonRef }
+      | { ok: false } => {
+      const supplied = input.daemonRef;
+      if (sessionRecord === undefined || supplied === undefined) return { ok: false };
+      const recordDaemonId = String(sessionRecord.daemonId);
+      if (String(supplied.id) !== recordDaemonId) return { ok: false };
+      if (supplied.kind !== 'local-chrome-daemon') return { ok: false };
+      if (String(supplied.mode) !== String(sessionRecord.mode)) return { ok: false };
+      let origin: string;
+      try {
+        origin = safeDaemonOrigin(String(supplied.healthUrlPreview), { requireLoopback: true });
+      } catch {
+        return { ok: false };
+      }
+      if (daemonIdFromEndpoint(origin) !== recordDaemonId) return { ok: false };
+      // Rebuild a CANONICAL ref from the validated origin + registry-approved mode, so no
+      // extra caller-controlled property reaches the controller/transport.
+      return { ok: true, daemonRef: buildDaemonRef(origin, sessionRecord.mode) };
+    })();
     if (
       snapshot.ok === false &&
       snapshot.code === 'target-stale' &&
@@ -310,19 +363,33 @@ export async function resumeBrowserRun(
       typeof input.targetUrl === 'string' &&
       input.targetUrl.length > 0 &&
       targetUrlIsOriginalIntent &&
-      input.daemonRef !== undefined &&
-      recreationDaemonBound &&
+      recreationDaemonBound.ok &&
       input.sideEffectInProgress === false &&
       deps.recreationPolicy({ runId: input.runId, targetUrl: input.targetUrl, sideEffectInProgress: false })
     ) {
       const created = await deps.pageTargets.createTarget({
-        daemonRef: input.daemonRef,
+        // the canonical, registry-bound ref -- never the caller's object
+        daemonRef: recreationDaemonBound.daemonRef,
         runId: input.runId,
         targetUrl: input.targetUrl,
         now: input.now,
       });
       // The recreated ref must itself be a well-formed page ref before anything uses it.
-      activeTargetRef = guardPageTargetRef('recreatedPageTargetRef', String(created.pageTargetRef)) as string;
+      const createdRef = guardPageTargetRef('recreatedPageTargetRef', String(created.pageTargetRef)) as string;
+      // The returned SNAPSHOT must also be usable. `createTarget` can legitimately resolve
+      // with a `stale`/`closed` snapshot when a concurrent lifecycle op changes the reserved
+      // target while the transport create is in flight; rebinding the authoritative session
+      // to that target (and closing the old one) would strand the session on a dead page.
+      // Require the expected `created` state before ANY rebind or close.
+      if (created.state !== 'created') {
+        return failTerminally(
+          'auth-recheck-target-recreation-unusable',
+          'target-stale',
+          browserAuthRecheckMessage('target-stale'),
+        );
+      }
+      activeTargetRef = createdRef;
+      recreatedTargetRef = createdRef;
       // REBIND the registry to the recreated target (K3): the record still points at the dead
       // stale ref, so a later resume/intervention would be rejected by the exact-ownership check
       // while the registry-approved old target is unusable. The registry stays authoritative.
@@ -351,6 +418,8 @@ export async function resumeBrowserRun(
     }
 
     if (snapshot.ok === false) {
+      // A replacement we created is now orphaned (the retry recheck failed) -- close it.
+      await closeTargetQuietly(recreatedTargetRef);
       // Re-derive a SAFE code + message from the VALIDATED failure code; never forward the
       // rechecker's own `message`/`diagnostics` (a foreign rechecker could put secrets there).
       const code = isBrowserAuthRecheckFailureCode(snapshot.code) ? snapshot.code : 'still-unauthorized';
@@ -368,27 +437,6 @@ export async function resumeBrowserRun(
     });
     latestVersion = confirmed.version;
     authConfirmed = true;
-
-    // §9.6 URL AUTHORITY for the DISCOVERY NAVIGATION (same authority as recreation): when a
-    // navigator is present and a targetUrl was supplied, it must be the run's own intent URL.
-    // Ownership refs alone do not authorize a destination -- without this, any caller owning
-    // the run/session/page refs could drive the AUTHENTICATED page to an arbitrary URL and
-    // have the resulting traffic captured and normalized as this run's evidence. Checked
-    // BEFORE any capture window opens, and failed in the discovery phase (auth already
-    // passed). A fixture flow without a navigator is unaffected (nothing would navigate).
-    if (
-      deps.pageTargets?.navigate &&
-      typeof input.targetUrl === 'string' &&
-      input.targetUrl.length > 0 &&
-      !targetUrlIsOriginalIntent
-    ) {
-      return failTerminally(
-        'discovery-navigation-unauthorized',
-        'discovery-url-not-intent',
-        'The supplied discovery URL is not the acquisition intent URL.',
-        'discovery',
-      );
-    }
 
     // Capture drives ONLY the already-authorized target (J2): `activeTargetRef` is either the
     // registry-verified input ref or the target we recreated ourselves. A rechecker-returned
@@ -501,6 +549,9 @@ export async function resumeBrowserRun(
         // best-effort only -- the terminal markFailed still runs
       }
     }
+    // Likewise a replacement target this flow created: the run is about to go terminal, so
+    // leaving it open would leak a live browser page.
+    await closeTargetQuietly(recreatedTargetRef);
     // Once auth was CONFIRMED the failure belongs to the DISCOVERY phase (K6): the passed
     // auth.rechecked event is committed, so reporting `recheck-failed` here would contradict it
     // and consumers would misread an ordinary discovery failure as another login failure.

@@ -345,3 +345,44 @@ test('abort() records the debt even when the capability has already vanished', a
   const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
   assert.deepEqual(result.observations, []);
 });
+
+// Codex re-review of PR #5 round 10 (P2, REGRESSION from round 9): a source with NEITHER
+// beginCapture NOR abortCapture (the documented fixture shape) must still abort and restart
+// normally -- it holds no buffer, so it can never owe a teardown. Round 9 charged every
+// window a debt and permanently bricked restarts for these sources.
+test('a source without any teardown hooks can still abort and restart', async () => {
+  const session = new BrowserNetworkCaptureSession({ collect: async () => [] }); // collect ONLY
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // must NOT throw
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 10 (P2): lifecycle ops for one window are serialized. A
+// slow abortCapture must not land AFTER a concurrent start() has reset and reopened the
+// window -- that would discard the fresh source window while the active key stayed set, so a
+// later stop() would collect from a torn-down window.
+test('a slow abort cannot tear down a window opened by a concurrent start', async () => {
+  const order = [];
+  let releaseAbort;
+  const source = {
+    collect: async () => { order.push('collect'); return []; },
+    beginCapture: () => { order.push('begin'); },
+    abortCapture: async () => { order.push('abort:enter'); await new Promise((r) => { releaseAbort = r; }); order.push('abort:exit'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  const aborting = session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // hangs inside abortCapture
+  await new Promise((r) => setTimeout(r, 5));
+  const restarting = session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // queued behind the abort
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(order, ['begin', 'abort:enter'], 'the restart must not run while abort is in flight');
+  releaseAbort();
+  await aborting;
+  await restarting;
+  // the reset for the NEW window happened strictly after the old teardown finished
+  assert.deepEqual(order, ['begin', 'abort:enter', 'abort:exit', 'begin']);
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});

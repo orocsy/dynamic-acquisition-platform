@@ -150,6 +150,9 @@ export class NotImplementedAuthStateProbe implements AuthStateProbe {
 
 export const DEFAULT_AUTH_RECHECK_TIMEOUT_MS = 30_000;
 
+/** Node's setTimeout silently clamps any delay above this (2^31-1 ms) to 1ms. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 // The fixed set of boundary kinds the detector may legitimately report. Used to allow-list the
 // value before it reaches a public recheck diagnostic (the AuthBoundaryDetector is injectable,
 // so a foreign one is untrusted — a secret-bearing `kind` must never be echoed).
@@ -191,7 +194,14 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
   ) {
     this.#probe = probe;
     this.#detector = detector;
-    this.#timeoutMs = timeoutMs > 0 ? timeoutMs : DEFAULT_AUTH_RECHECK_TIMEOUT_MS;
+    // The deadline must be a POSITIVE, FINITE value inside Node's timer range. `Infinity` or
+    // anything above MAX_TIMER_DELAY_MS is silently clamped by setTimeout to ~1ms, which would
+    // turn a "no timeout" configuration into an instant `recheck-timeout` on every healthy
+    // recheck -- the exact opposite of the intent. Anything invalid falls back to the default.
+    this.#timeoutMs =
+      Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= MAX_TIMER_DELAY_MS
+        ? timeoutMs
+        : DEFAULT_AUTH_RECHECK_TIMEOUT_MS;
   }
 
   async recheck(input: BrowserAuthRecheckInput): Promise<BrowserAuthRecheckResult> {
@@ -235,11 +245,16 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
       if (timer !== undefined) clearTimeout(timer);
     }
 
-    const detection = this.#detector.detect({
-      navigation: observed?.navigation,
-      observations: observed?.observations,
-      pageTextPreview: observed?.pageTextPreview,
-    });
+    // SNAPSHOT the probe output ONCE. The probe is injectable, so `navigation` (and friends)
+    // could be getters that return different values on each read: feeding the detector an
+    // empty navigation (no boundary signal) and then a successful one to the usability /
+    // target-binding checks would yield `ok: true` even though NO single probe result ever
+    // established both "no auth boundary" AND "reachable". Every check below reads these.
+    const navigation = observed?.navigation;
+    const observations = observed?.observations;
+    const pageTextPreview = observed?.pageTextPreview;
+
+    const detection = this.#detector.detect({ navigation, observations, pageTextPreview });
     if (detection.signal) {
       // The page still presents an auth boundary. Report a value-free diagnostic: the boundary
       // KIND is copied ONLY when it is one of the fixed known kinds (the detector is injectable,
@@ -255,8 +270,8 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
     }
 
     // Positive usability evidence: a navigation that actually loaded a non-error page. No such
-    // evidence -> do NOT report success (an unrecognized-but-broken page must not pass).
-    const navigation = observed?.navigation;
+    // evidence -> do NOT report success (an unrecognized-but-broken page must not pass). This
+    // is the SAME `navigation` value the detector saw (snapshotted above).
     const usable =
       !!navigation &&
       navigation.ok === true &&

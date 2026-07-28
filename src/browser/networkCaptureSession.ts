@@ -197,11 +197,16 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
           // resolved start() to pair an abort with). Record the teardown debt for that old
           // window and repay it here if we can; either way the debt survives for a later
           // retry, and the original reset failure is what the caller sees.
-          if (wasActive && this.#cleanupOwed.has(key)) {
+          // Regardless of whether an OLDER active window existed: a beginCapture that starts
+          // buffering and then rejects has left a partial buffer behind, and the key was
+          // never added to #active, so no later abort() could reclaim it. Any buffer-backed
+          // start owes cleanup for the buffer it just attempted.
+          if (bufferBacked) {
+            this.#cleanupOwed.add(key);
             this.#pendingTeardown.add(key);
-            if (this.#source.abortCapture) {
+            if (abortCapture) {
               try {
-                await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
+                await abortCapture.call(this.#source, { runId, pageTargetRef: expectedTarget });
                 this.#pendingTeardown.delete(key);
               } catch {
                 // keep the debt -- a later start()/abort() retries the teardown

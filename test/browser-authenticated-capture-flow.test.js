@@ -720,27 +720,30 @@ test('a substituted URL is refused before the recheck probe ever runs', async ()
   assert.equal(events.includes('evidence.normalized'), false);
 });
 
-// Codex re-review of PR #5 round 9 (P2): successful recreation CLOSES the dead stale target
-// (navigate only marks it stale) so repeated stale resumes do not accumulate live pages; a
-// failing close does not fail the recovered resume.
-test('recreation closes the dead stale target best-effort', async () => {
+// Codex re-review of PR #5 rounds 9+14 (P2): the dead stale target is closed BEFORE the
+// replacement is allocated, and a FAILING close now BLOCKS recreation. Round 9 closed it
+// best-effort after creating the replacement, which meant a rejecting closeTarget left the
+// old page allocated while the resume reported success -- so repeated stale resumes still
+// accumulated leaked pages. Closing first means nothing is allocated to roll back.
+test('a failing close of the stale target blocks recreation instead of leaking', async () => {
   const { coordinator } = makeCoordinator();
   const { requestId, completed } = await toCompletedIntervention(coordinator);
-  const recreatedObs = { ...safeObs('o1'), pageTargetRef: 'page:recreated-1' };
-  const session = new BrowserNetworkCaptureSession({ collect: async () => [recreatedObs] });
-  let recheckCalls = 0;
-  const rechecker = new FakeBrowserAuthRechecker(() => (++recheckCalls === 1 ? authRecheckFailure('target-stale') : { ok: true, confidence: 1, diagnostics: [] }));
   const closed = [];
+  let created = 0;
   const pageTargets = {
-    createTarget: async () => ({ pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }),
-    closeTarget: async (ref) => { closed.push(ref); throw new Error('close hiccup'); }, // even a FAILING close is tolerated
+    createTarget: async () => { created += 1; return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; },
+    closeTarget: async (ref) => { closed.push(ref); throw new Error('transport unavailable'); },
   };
+  const registry = defaultRegistry();
   const result = await resumeBrowserRun(
-    { coordinator, rechecker, session, pageTargets, recreationPolicy: () => true, sessionRegistry: defaultRegistry() },
-    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: DAEMON_REF, sideEffectInProgress: false, now: NOW, completeRun: true },
+    { coordinator, rechecker: new FakeBrowserAuthRechecker(authRecheckFailure('target-stale')), session: await startedSession([safeObs('o1')]), pageTargets, recreationPolicy: () => true, sessionRegistry: registry },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: DAEMON_REF, sideEffectInProgress: false, now: NOW },
   );
-  assert.equal(result.outcome, 'completed');
-  assert.deepEqual(closed, ['page:t-1']); // the DEAD stale target was closed, not the replacement
+  assert.equal(result.outcome, 'recheck-failed');
+  assert.equal(result.recheckCode, 'target-stale');
+  assert.deepEqual(closed, ['page:t-1']); // attempted, failed
+  assert.equal(created, 0, 'nothing may be allocated once the stale target could not be closed');
+  assert.deepEqual(registry.updates, []); // and the registry was never rebound
 });
 
 // Codex re-review of PR #5 round 10 (P2): createTarget can legitimately resolve with a
@@ -763,8 +766,9 @@ test('an unusable recreation snapshot is refused before the registry is rebound'
   assert.equal(result.outcome, 'recheck-failed');
   assert.deepEqual(registry.updates, []); // never rebound to the unusable target
   // Round 12: the unusable target was still CREATED, so it must be closed (the controller
-  // frees transport resources only via closeTarget) -- but the ORIGINAL is left alone.
-  assert.deepEqual(closed, ['page:recreated-1']);
+  // frees transport resources only via closeTarget). Round 14: the dead ORIGINAL is closed
+  // first, before anything is allocated -- so both appear, original first.
+  assert.deepEqual(closed, ['page:t-1', 'page:recreated-1']);
 });
 
 // Codex re-review of PR #5 round 10 (P2): when the post-recreation retry recheck fails, the
@@ -959,4 +963,70 @@ test('an unspecified-address intent URL is refused as unsafe', async () => {
     assert.equal(result.recheckCode, 'unsafe-target', unsafe);
     assert.equal(recheckCalls, 0, `${unsafe} must never reach the navigating probe`);
   }
+});
+
+// ---- Codex re-review of PR #5 round 14 ----
+
+// P1: an OMITTED (or empty) targetUrl used to skip BOTH the intent-equality and the safety
+// gate, so the rechecker probed whatever page the human left open and discovery navigation
+// was skipped entirely -- a polling capture source could then record, and completeRun could
+// complete, evidence from the wrong page. The URL is now DERIVED from the run's intent.
+test('an omitted targetUrl is derived from the run intent, not treated as authorization', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator); // intent: https://example.com/account
+  const probedUrls = [];
+  const navigations = [];
+  const rechecker = new FakeBrowserAuthRechecker((i) => { probedUrls.push(i.targetUrl); return { ok: true, confidence: 1, diagnostics: [] }; });
+  const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), closeTarget: async () => {}, navigate: async (i) => { navigations.push(i.url); return { ok: true, pageTargetRef: i.pageTargetRef, state: 'ready', status: 200, diagnostics: [] }; } };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker, session: await startedSession([safeObs('o1')]), pageTargets, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', now: NOW }, // NO targetUrl
+  );
+  assert.equal(result.outcome, 'evidence-recorded');
+  assert.deepEqual(probedUrls, ['https://example.com/account']); // the intent, not "wherever we are"
+  assert.deepEqual(navigations, ['https://example.com/account']); // discovery navigation still ran
+});
+
+// P2: discovery navigation that is transport-ok but lands on an error status must not have
+// its traffic normalized -- otherwise completeRun could complete the acquisition on a 500.
+test('a discovery navigation with an error status fails the run', async () => {
+  for (const status of [500, 404, '200', NaN]) {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator);
+    const session = { start: async () => {}, abort: async () => {}, stop: async () => ({ observations: [], diagnostics: [] }), listObservations: async () => [] };
+    const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), closeTarget: async () => {}, navigate: async (i) => ({ ok: true, pageTargetRef: i.pageTargetRef, state: 'ready', status, diagnostics: [] }) };
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', now: NOW },
+    );
+    assert.equal(result.outcome, 'discovery-failed', `status ${String(status)}`);
+    assert.equal(result.recheckCode, 'discovery-nav-failed');
+  }
+});
+
+// P2: captureId prefixes every evidence id and lands in checkpoint evidenceRefs, crossing the
+// evidence-validation boundary as data the normalizer never sees. It must be a bounded,
+// colon-free opaque part -- refused before any browser work, not persisted.
+test('a malformed captureId is refused before any browser work', async () => {
+  const bad = ['cap:with:colons', 'has space', 'x'.repeat(65), '', 'tab\there', 'token_secret_abc123'];
+  for (const value of bad) {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator);
+    let recheckCalls = 0;
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker(() => { recheckCalls += 1; return { ok: true, confidence: 1, diagnostics: [] }; }),
+        session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', captureId: value, now: NOW },
+    );
+    assert.equal(result.recheckCode, 'capture-id-invalid', JSON.stringify(value));
+    assert.equal(recheckCalls, 0, 'refused before any browser work');
+  }
+  // a well-formed one still works
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const ok = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', captureId: 'cap-run1-002', now: NOW },
+  );
+  assert.equal(ok.outcome, 'evidence-recorded');
 });

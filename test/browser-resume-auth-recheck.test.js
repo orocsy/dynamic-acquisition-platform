@@ -283,3 +283,16 @@ test('a defined non-numeric navigation status fails closed', async () => {
   const omitted = { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [] };
   assert.equal((await new DetectorBackedAuthRechecker(probeOf({ navigation: omitted })).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' })).ok, true);
 });
+
+// Codex re-review of PR #5 round 14 (P2): the navigation's own reported STATE must be ready.
+// An internally inconsistent probe result -- ok:true, status:200, state:'stale' -- would
+// otherwise confirm authentication for a page the same result declares dead, committing
+// auth.rechecked before the discovery work inevitably fails.
+test('a navigation reporting a non-ready state cannot authenticate', async () => {
+  for (const state of ['stale', 'closed', 'created', 'navigating', undefined]) {
+    const nav = { ok: true, pageTargetRef: 'page:t-1', state, diagnostics: [], status: 200 };
+    const r = await new DetectorBackedAuthRechecker(probeOf({ navigation: nav })).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+    assert.equal(r.ok, false, `state ${String(state)} must not authenticate`);
+    assert.equal(r.diagnostics[0].code, 'auth-recheck-target-not-usable');
+  }
+});

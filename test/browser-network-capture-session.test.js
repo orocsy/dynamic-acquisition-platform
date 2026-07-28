@@ -441,3 +441,21 @@ test('a hook removed during its own call still marks the window buffer-backed', 
   await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
   await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
 });
+
+// Codex re-review of PR #5 round 14 (P2): a beginCapture that starts buffering and THEN
+// rejects on an INITIAL start leaves a partial buffer with no active key, so no later abort()
+// could reclaim it. Any buffer-backed start now owes cleanup for the buffer it attempted,
+// regardless of whether an older active window existed.
+test('a failed initial beginCapture still owes cleanup for the buffer it started', async () => {
+  const calls = [];
+  const source = {
+    collect: async () => [],
+    beginCapture: () => { calls.push('begin'); throw new Error('buffered then failed'); },
+    abortCapture: async () => { calls.push('abort'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  // FIRST start (nothing was active before) -- the reset fails after the source began buffering
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /buffered then failed/);
+  assert.deepEqual(calls, ['begin', 'abort'], 'the attempted buffer must be torn down');
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});

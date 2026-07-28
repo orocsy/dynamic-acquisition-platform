@@ -6,7 +6,8 @@ import type {
 import type { RunCheckpoint } from '../runtime';
 import { guardPageTargetRef, guardSurrogateSessionId } from './persistenceGuard';
 import { buildDaemonRef, daemonIdFromEndpoint, safeDaemonOrigin } from './daemonClient';
-import { isSafeNavigationTarget } from './navigationPolicy';
+import { isOpaqueBrowserRef, isSafeBrowserRefPart } from './browserRef';
+import { isSafeNavigationTarget, isUsableNavigationStatus } from './navigationPolicy';
 import type { BrowserAuthRechecker, BrowserAuthRecheckResult } from './authRecheck';
 import { browserAuthRecheckMessage, isBrowserAuthRecheckFailureCode } from './authRecheck';
 import type { EvidenceRecordingCoordinator, BrowserNetworkCaptureFlowResult } from './browserCaptureFlow';
@@ -293,6 +294,22 @@ export async function resumeBrowserRun(
   // already performed. Every url-consuming step (probe, recreation, discovery navigation)
   // now sits behind this one gate. Fail closed when the intent target is missing/not a URL.
   const intentTarget = (resumed.intentSnapshot as { target?: { kind?: unknown; value?: unknown } } | null | undefined)?.target;
+  // The run's OWN url intent, when it has one. When the caller omits `targetUrl` entirely we
+  // DERIVE it from here rather than treating absence as authorization: with no url, the
+  // rechecker probes whatever page the human happened to leave open and discovery navigation
+  // is skipped, so a polling capture source could record -- and `completeRun` could complete
+  // -- evidence from a page that is not the acquisition target at all.
+  const intentUrl =
+    intentTarget !== null &&
+    intentTarget !== undefined &&
+    intentTarget.kind === 'url' &&
+    typeof intentTarget.value === 'string' &&
+    intentTarget.value.length > 0
+      ? intentTarget.value
+      : undefined;
+  if ((input.targetUrl === undefined || input.targetUrl === '') && intentUrl !== undefined) {
+    input.targetUrl = intentUrl;
+  }
   const targetUrlIsOriginalIntent =
     intentTarget !== null &&
     intentTarget !== undefined &&
@@ -346,6 +363,35 @@ export async function resumeBrowserRun(
     );
   }
   const effectiveIntentId = authoritativeIntentId;
+
+  // `captureId` becomes the PREFIX of every evidence id this capture emits and lands in the
+  // checkpoint's evidenceRefs, i.e. it crosses the evidence-validation boundary as data the
+  // normalizer never sees. Canonicalize it: a bounded, colon-free opaque part. A malformed,
+  // secret-bearing, or control-character id is refused BEFORE any browser work rather than
+  // being persisted. (Reuse across captures is still the caller's to avoid -- the flow's
+  // default scope is checkpoint-version-derived precisely so the default cannot collide.)
+  if (input.captureId !== undefined) {
+    const captureId = typeof input.captureId === 'string' ? input.captureId : undefined;
+    // BOTH rules apply. `isSafeBrowserRefPart` is structural only (no colon/whitespace, which
+    // the `<scope>:<evidenceId>` join requires); `isOpaqueBrowserRef` adds the credential
+    // keyword denylist. A captureId PERSISTS STANDALONE inside evidenceRefs -- exactly like an
+    // observation id -- so it follows the opaque-ref rule, not the looser ref-PART rule that
+    // deliberately keeps such markers legal in daemonId/runId.
+    if (
+      captureId === undefined ||
+      captureId.length === 0 ||
+      captureId.length > 64 ||
+      !isSafeBrowserRefPart(captureId) ||
+      !isOpaqueBrowserRef(captureId)
+    ) {
+      return failTerminally(
+        'resume-capture-id-invalid',
+        'capture-id-invalid',
+        'The supplied capture id is not a valid opaque identifier.',
+      );
+    }
+    input.captureId = captureId;
+  }
 
   // Every post-transition step is wrapped: a thrown error (rechecker/probe/controller) must
   // become a TERMINAL failure, not a stranded running_after_resume checkpoint (§9.4).
@@ -421,6 +467,21 @@ export async function resumeBrowserRun(
       input.sideEffectInProgress === false &&
       deps.recreationPolicy({ runId: input.runId, targetUrl: input.targetUrl, sideEffectInProgress: false })
     ) {
+      // CLOSE THE DEAD ORIGINAL FIRST. Closing it after the replacement exists meant a
+      // rejecting closeTarget (transport unavailable) left the old page allocated while the
+      // resume reported success -- so repeated stale resumes still accumulated leaked pages,
+      // and "closeTarget is required" was advertised fail-closed behaviour it did not deliver.
+      // Doing it first means a failed close simply blocks recreation: nothing is allocated,
+      // nothing needs rolling back, and the run fails as an ordinary stale target.
+      try {
+        await deps.pageTargets.closeTarget(inputTargetRef);
+      } catch {
+        return failTerminally(
+          'auth-recheck-stale-target-not-closed',
+          'target-stale',
+          browserAuthRecheckMessage('target-stale'),
+        );
+      }
       const created = await deps.pageTargets.createTarget({
         // the canonical, registry-bound ref -- never the caller's object
         daemonRef: recreationDaemonBound.daemonRef,
@@ -452,18 +513,6 @@ export async function resumeBrowserRun(
       // stale ref, so a later resume/intervention would be rejected by the exact-ownership check
       // while the registry-approved old target is unusable. The registry stays authoritative.
       deps.sessionRegistry.update({ sessionId: sessionRef, pageTargetRef: activeTargetRef, now: input.now });
-      // CLOSE the dead stale target now that its replacement exists and is registry-bound:
-      // navigate() only marks a failed target `stale`, so without an explicit close the raw
-      // browser page (and its controller mapping) stays live and repeated stale resumes
-      // accumulate targets. Best-effort: a close failure must not fail the resume that just
-      // recovered -- the replacement is already authoritative.
-      if (deps.pageTargets.closeTarget) {
-        try {
-          await deps.pageTargets.closeTarget(inputTargetRef);
-        } catch {
-          // best-effort only -- the stale target is already unusable and unregistered
-        }
-      }
       snapshot = snapshotRecheck(
         await deps.rechecker.recheck({
           runId: input.runId,
@@ -521,7 +570,14 @@ export async function resumeBrowserRun(
       let navigated = false;
       try {
         const navResult = await deps.pageTargets.navigate({ pageTargetRef: captureTargetRef, url: input.targetUrl, now: input.now });
-        navigated = !!navResult && navResult.ok === true && String(navResult.pageTargetRef) === captureTargetRef;
+        // Transport-level ok is not enough (same rule the auth recheck applies): a navigation
+        // that lands on a 500 would otherwise have its traffic normalized and could COMPLETE
+        // the acquisition on an error page.
+        navigated =
+          !!navResult &&
+          navResult.ok === true &&
+          String(navResult.pageTargetRef) === captureTargetRef &&
+          isUsableNavigationStatus(navResult.status);
       } catch {
         navigated = false;
       }

@@ -4,6 +4,7 @@ import type { PageTargetRef } from './types';
 import type { AuthBoundaryDetector } from './authBoundaryDetector';
 import { ConservativeAuthBoundaryDetector } from './authBoundaryDetector';
 import { guardSurrogateSessionId, guardPageTargetRef } from './persistenceGuard';
+import { isUsableNavigationStatus } from './navigationPolicy';
 
 /**
  * Phase 3.6 (LLD §9.3): re-check the authenticated state of a browser session AFTER a human
@@ -302,12 +303,15 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
     // hostile probe skip both the detector's unauthorized-status rule and this check and still
     // be reported as authenticated. Absent stays acceptable; anything defined-but-not-a-number
     // fails closed.
-    const status: unknown = navigation?.status;
-    const statusUsable =
-      status === undefined
-        ? true
-        : typeof status === 'number' && Number.isFinite(status) && status >= 200 && status < 400;
-    const usable = navigation !== undefined && navigation.ok === true && statusUsable;
+    // ALSO require the target's own reported state to be `ready`. A probe can return an
+    // internally inconsistent result -- `{ ok: true, state: 'stale', status: 200 }` -- and
+    // without this check that confirms authentication for a page the same result declares
+    // dead, committing `auth.rechecked` before the discovery work inevitably fails.
+    const usable =
+      navigation !== undefined &&
+      navigation.ok === true &&
+      navigation.state === 'ready' &&
+      isUsableNavigationStatus(navigation.status);
     if (!usable || navigation === undefined) {
       return authRecheckFailure('still-unauthorized', [{ level: 'info', code: 'auth-recheck-target-not-usable' }]);
     }

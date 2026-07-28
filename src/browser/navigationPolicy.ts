@@ -71,6 +71,17 @@ export type SafeRecreationInput = {
  * Needed because a run's `intentSnapshot` is stored as `unknown` and the Intent contract does
  * not constrain schemes: matching the recorded intent proves the URL is the AUTHORIZED one,
  * not that it is a SAFE one. Both properties have to be checked before any navigation.
+ *
+ * REDIRECT REQUIREMENT (binding on every real transport implementation): checking the entry
+ * URL is necessary but NOT sufficient. An allowed public URL can redirect to
+ * `http://127.0.0.1:9222`, `http://0.0.0.0:9222`, or another local service, and following
+ * that redirect is the same unsafe request the entry check exists to prevent. A transport
+ * implementing `CdpTargetTransport` or `AuthStateProbe` MUST re-apply this predicate to each
+ * redirect destination BEFORE following it, and abort the navigation when it fails. The flow
+ * cannot enforce this after the fact: `BasePageTargetController` sanitizes only the FINAL
+ * url, and `sanitizeUrlPreview` deliberately drops loopback previews, so a followed redirect
+ * is indistinguishable downstream from "no preview available". See
+ * `docs/phase3.6-resume-auth-recheck.md` §8.
  */
 export function isSafeNavigationTarget(url: unknown): boolean {
   if (typeof url !== 'string' || url.length === 0) return false;
@@ -99,6 +110,23 @@ export function isSafeNavigationTarget(url: unknown): boolean {
  * `safeDaemonOrigin({ requireLoopback: true })`, where treating `0.0.0.0` as loopback would
  * LOOSEN the daemon binding rather than tighten it.
  */
+/**
+ * Is a navigation RESULT usable evidence that the page actually loaded?
+ *
+ * Transport-level `ok` is not enough: a navigation can succeed at the wire level and still
+ * land on a 500 error page or a target the controller already considers dead. An omitted
+ * status stays acceptable (the field is optional), but a DEFINED status must be a finite
+ * PRIMITIVE number in the 2xx/3xx range — `'401'`, `new Number(200)`, and `NaN` are all
+ * defined-but-not-numeric and fail closed rather than reading as "no status supplied".
+ *
+ * Shared by the auth rechecker's usability rule and the post-recheck discovery navigation so
+ * the two cannot drift apart.
+ */
+export function isUsableNavigationStatus(status: unknown): boolean {
+  if (status === undefined) return true;
+  return typeof status === 'number' && Number.isFinite(status) && status >= 200 && status < 400;
+}
+
 export function isUnspecifiedHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.+$/, '').replace(/^\[|\]$/g, '');
   return host === '0.0.0.0' || host === '::' || host === '::ffff:0:0' || host === '::ffff:0.0.0.0';

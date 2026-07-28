@@ -134,6 +134,21 @@ export async function resumeBrowserRun(
   deps: ResumeBrowserRunDeps,
   input: ResumeBrowserRunInput,
 ): Promise<ResumeBrowserRunResult> {
+  // SNAPSHOT the whole input FIRST -- every caller-controlled field is read exactly once,
+  // before any validation or browser work. Without this, a JS caller can back a field (e.g.
+  // `targetUrl`) with a stateful getter that returns the run's original intent URL to the
+  // §9.5 comparison below and a substituted destination to the later policy / createTarget /
+  // navigate reads -- passing every check while the browser opens somewhere else. The spread
+  // invokes each own getter a single time and yields plain data properties, so all subsequent
+  // `input.*` reads are stable. (Object-valued refs are additionally canonicalized to strings
+  // by the guards below -- K8; a prototype-hosted getter is simply not copied, which fails
+  // closed to `undefined`.)
+  input = { ...input };
+  // Same discipline one level down: daemonRef.id is compared against the registry's daemon
+  // (J5) and later read again inside createTarget -- a stateful `id` getter could satisfy the
+  // comparison and then recreate the target on a foreign daemon. Copy it to data properties.
+  if (input.daemonRef !== undefined && input.daemonRef !== null) input.daemonRef = { ...input.daemonRef };
+
   // Validate ref SHAPES + OWNERSHIP BEFORE the resume transition: throwing here (no checkpoint
   // change yet) lets the caller fix the input and retry. After resumeRun commits to
   // running_after_resume, a re-resume is rejected, so a late throw would strand the run.

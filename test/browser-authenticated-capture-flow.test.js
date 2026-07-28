@@ -623,3 +623,37 @@ test('a session without abort tears the window down via stop() on navigation fai
   const events = (await checkpointStore.listEvents('run_ac_001')).map((e) => e.type);
   assert.equal(events.includes('evidence.normalized'), false);
 });
+
+// Codex re-review of PR #5 round 7 (P1): the WHOLE input is snapshotted before any work, so a
+// stateful targetUrl GETTER cannot show the intent URL to the §9.5 comparison and a
+// substituted destination to the later policy/createTarget/navigate reads.
+test('a stateful targetUrl getter cannot pass intent binding and then substitute the URL', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator); // intent: https://example.com/account
+  const recreatedObs = { ...safeObs('o1'), pageTargetRef: 'page:recreated-1' };
+  const session = new BrowserNetworkCaptureSession({ collect: async () => [recreatedObs] });
+  let recheckCalls = 0;
+  const rechecker = new FakeBrowserAuthRechecker(() => (++recheckCalls === 1 ? authRecheckFailure('target-stale') : { ok: true, confidence: 1, diagnostics: [] }));
+  const created = [];
+  const navigations = [];
+  const pageTargets = {
+    createTarget: async (i) => { created.push(i.targetUrl); return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; },
+    navigate: async (i) => { navigations.push(i.url); return { ok: true, pageTargetRef: i.pageTargetRef, state: 'ready', diagnostics: [] }; },
+  };
+  let reads = 0;
+  const hostileInput = {
+    runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1',
+    get targetUrl() { reads += 1; return reads === 1 ? 'https://example.com/account' : 'https://evil.example.com/exfil'; },
+    daemonRef: { id: 'daemon_1', kind: 'local-chrome-daemon', mode: 'dedicated-daemon', healthUrlPreview: 'http://127.0.0.1:9222' },
+    sideEffectInProgress: false, now: NOW, completeRun: true,
+  };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker, session, pageTargets, recreationPolicy: () => true, sessionRegistry: defaultRegistry() },
+    hostileInput,
+  );
+  assert.equal(reads, 1); // the getter fired ONCE, during the input snapshot
+  assert.equal(result.outcome, 'completed');
+  // every browser call saw the SAME (intent) URL -- never the substituted one
+  assert.deepEqual(created, ['https://example.com/account']);
+  assert.deepEqual(navigations, ['https://example.com/account']);
+});

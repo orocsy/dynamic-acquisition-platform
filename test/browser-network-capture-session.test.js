@@ -256,3 +256,42 @@ test('start() canonicalizes the target once (stateful toString cannot split key 
   const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:a' });
   assert.deepEqual(result.observations, []);
 });
+
+// Codex re-review of PR #5 round 7 (P2): start() may only clear a teardown debt when an
+// ACTUAL reset ran. A source with abortCapture but no beginCapture must have the debt repaid
+// (teardown retried) before its window may reopen -- otherwise the restart would mark the
+// window active over the still-live stale buffer and stop() could collect it.
+test('an unpaid teardown debt is repaid before a source without beginCapture restarts', async () => {
+  let attempts = 0;
+  const source = {
+    collect: async () => [],
+    // NO beginCapture on this source
+    abortCapture: async () => { attempts += 1; if (attempts < 3) throw new Error('teardown failing'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await assert.rejects(() => session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /teardown failing/); // attempt 1, debt kept
+  // a restart may NOT proceed while the repayment itself fails -- and the window stays closed
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /teardown failing/); // attempt 2
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+  // once the repayment succeeds the window reopens normally
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // attempt 3 succeeds
+  assert.equal(attempts, 3);
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});
+
+// Codex re-review of PR #5 round 7 (P2): runId is snapshotted alongside the page ref -- a
+// stateful runId cannot register run A as active while resetting run B.
+test('start() canonicalizes the runId once (stateful toString cannot split key and reset)', async () => {
+  const resets = [];
+  const source = { collect: async () => [], beginCapture: (i) => resets.push(i.runId) };
+  const session = new BrowserNetworkCaptureSession(source);
+  let conversions = 0;
+  const shifty = { toString() { conversions += 1; return conversions === 1 ? 'run_A' : 'run_B'; } };
+  await session.start({ runId: shifty, pageTargetRef: 'page:t-1' });
+  assert.equal(conversions, 1); // converted exactly once
+  assert.deepEqual(resets, ['run_A']); // the reset went to the SAME run the key was derived from
+  const result = await session.stop({ runId: 'run_A', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});

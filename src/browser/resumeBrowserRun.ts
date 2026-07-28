@@ -307,7 +307,19 @@ export async function resumeBrowserRun(
     intentTarget.value.length > 0
       ? intentTarget.value
       : undefined;
-  if ((input.targetUrl === undefined || input.targetUrl === '') && intentUrl !== undefined) {
+  if (input.targetUrl === undefined || input.targetUrl === '') {
+    // FAIL CLOSED when nothing authoritative can be derived. A run whose intent target is
+    // absent, malformed, or a valid NON-url kind (`site`/`query`/`document`/`workflow`) has no
+    // URL for this browser resume to visit -- and leaving `targetUrl` undefined would let the
+    // rechecker probe whatever page the human left open while discovery navigation is skipped
+    // entirely, so unrelated buffered traffic could be recorded and even complete the run.
+    if (intentUrl === undefined) {
+      return failTerminally(
+        'resume-url-missing',
+        'url-not-intent',
+        'The supplied URL is not the acquisition intent URL.',
+      );
+    }
     input.targetUrl = intentUrl;
   }
   const targetUrlIsOriginalIntent =
@@ -576,6 +588,7 @@ export async function resumeBrowserRun(
         navigated =
           !!navResult &&
           navResult.ok === true &&
+          navResult.state === 'ready' &&
           String(navResult.pageTargetRef) === captureTargetRef &&
           isUsableNavigationStatus(navResult.status);
       } catch {

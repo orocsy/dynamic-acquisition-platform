@@ -1030,3 +1030,76 @@ test('a malformed captureId is refused before any browser work', async () => {
   );
   assert.equal(ok.outcome, 'evidence-recorded');
 });
+
+// ---- Codex re-review of PR #5 round 15 ----
+
+// P1: omitting targetUrl for a run with NO derivable url intent must FAIL CLOSED. Round 14
+// derived the URL when the intent had one, but left the original bypass intact for runs whose
+// intent target is absent, malformed, or a valid non-url kind (site/query/document/workflow).
+test('an omitted targetUrl fails closed when the run has no url intent', async () => {
+  const intents = [
+    { target: { kind: 'site', value: 'example.com' } },
+    { target: { kind: 'query', value: 'invoices' } },
+    { target: { kind: 'url' } },              // malformed: no value
+    { target: { kind: 'url', value: '' } },   // malformed: empty value
+    {},                                        // no target at all
+  ];
+  for (const intentSnapshot of intents) {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator, 'run_ac_001', intentSnapshot);
+    let recheckCalls = 0;
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker(() => { recheckCalls += 1; return { ok: true, confidence: 1, diagnostics: [] }; }),
+        session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', now: NOW }, // NO targetUrl
+    );
+    assert.equal(result.outcome, 'recheck-failed', JSON.stringify(intentSnapshot));
+    assert.equal(result.recheckCode, 'url-not-intent');
+    assert.equal(recheckCalls, 0, 'must never probe "wherever the human left the page"');
+  }
+});
+
+// P2: discovery navigation must require a ready state too -- the recheck already rejects an
+// internally inconsistent { ok: true, state: 'stale', status: 200 }, and capture must not
+// proceed against a target the same navigation result declares unusable.
+test('a discovery navigation reporting a non-ready state fails the run', async () => {
+  for (const state of ['stale', 'closed', 'navigating', undefined]) {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator);
+    const session = { start: async () => {}, abort: async () => {}, stop: async () => ({ observations: [], diagnostics: [] }), listObservations: async () => [] };
+    const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), closeTarget: async () => {}, navigate: async (i) => ({ ok: true, pageTargetRef: i.pageTargetRef, state, status: 200, diagnostics: [] }) };
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', now: NOW },
+    );
+    assert.equal(result.outcome, 'discovery-failed', `state ${String(state)}`);
+    assert.equal(result.recheckCode, 'discovery-nav-failed');
+  }
+});
+
+// P1: an intent URL pointing at a private / link-local / metadata destination is unsafe even
+// though it is the run's own authoritative intent -- "not loopback" is nowhere near "public".
+test('a private or link-local intent URL is refused as unsafe', async () => {
+  const unsafe = [
+    'http://10.0.0.1/admin',
+    'http://192.168.1.1/router',
+    'http://172.16.0.5/internal',
+    'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
+    'http://100.64.0.1/cgnat',
+    'http://[fe80::1]/linklocal',
+    'http://[fc00::1]/ula',
+    'http://2130706433/decimal-loopback',
+  ];
+  for (const value of unsafe) {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator, 'run_ac_001', { target: { kind: 'url', value } });
+    let recheckCalls = 0;
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker(() => { recheckCalls += 1; return { ok: true, confidence: 1, diagnostics: [] }; }),
+        session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: value, now: NOW },
+    );
+    assert.equal(result.recheckCode, 'unsafe-target', value);
+    assert.equal(recheckCalls, 0, `${value} must never reach the navigating probe`);
+  }
+});

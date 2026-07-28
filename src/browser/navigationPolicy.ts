@@ -77,7 +77,11 @@ export type SafeRecreationInput = {
  * `http://127.0.0.1:9222`, `http://0.0.0.0:9222`, or another local service, and following
  * that redirect is the same unsafe request the entry check exists to prevent. A transport
  * implementing `CdpTargetTransport` or `AuthStateProbe` MUST re-apply this predicate to each
- * redirect destination BEFORE following it, and abort the navigation when it fails. The flow
+ * redirect destination BEFORE following it, and abort the navigation when it fails. It must
+ * ALSO validate the RESOLVED address of each destination: this predicate can only judge the
+ * literal host, so a DNS name that resolves into a private/link-local range (or re-resolves
+ * between check and connect — DNS rebinding) is invisible here and must be rejected at
+ * connect time by the transport. The flow
  * cannot enforce this after the fact: `BasePageTargetController` sanitizes only the FINAL
  * url, and `sanitizeUrlPreview` deliberately drops loopback previews, so a followed redirect
  * is indistinguishable downstream from "no preview available". See
@@ -94,6 +98,7 @@ export function isSafeNavigationTarget(url: unknown): boolean {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
   if (parsed.username !== '' || parsed.password !== '') return false;
   if (isLoopbackHost(parsed.hostname) || isUnspecifiedHost(parsed.hostname)) return false;
+  if (isPrivateOrLinkLocalHost(parsed.hostname)) return false;
   return true;
 }
 
@@ -125,6 +130,48 @@ export function isSafeNavigationTarget(url: unknown): boolean {
 export function isUsableNavigationStatus(status: unknown): boolean {
   if (status === undefined) return true;
   return typeof status === 'number' && Number.isFinite(status) && status >= 200 && status < 400;
+}
+
+/**
+ * Private, carrier-grade-NAT, or link-local destinations. `isSafeNavigationTarget` refuses
+ * these alongside loopback/unspecified, because "not loopback" is nowhere near "public": an
+ * allowed public endpoint that redirects to `http://10.0.0.1`, `http://192.168.1.1`, or
+ * `http://169.254.169.254` (the cloud instance-metadata address) would otherwise reach
+ * intranet services or credential endpoints from an authenticated browser — the classic SSRF
+ * shape. `new URL` canonicalizes decimal/octal/IPv4-mapped spellings, so matching the
+ * canonical literal forms is sufficient here.
+ *
+ * A DNS NAME that RESOLVES to one of these ranges cannot be caught at this layer — that is
+ * the transport's resolved-address obligation (see `isSafeNavigationTarget`).
+ */
+export function isPrivateOrLinkLocalHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.+$/, '').replace(/^\[|\]$/g, '');
+  if (host.includes(':')) {
+    if (/^fe[89ab][0-9a-f]:/.test(host)) return true; // fe80::/10 link-local
+    if (/^f[cd][0-9a-f]{2}:/.test(host)) return true; // fc00::/7 unique-local
+    // IPv4-mapped: `::ffff:10.0.0.1` canonicalizes to `::ffff:a00:1`, so decode the hex pair.
+    const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+    if (mappedHex) {
+      const hi = parseInt(mappedHex[1], 16);
+      const lo = parseInt(mappedHex[2], 16);
+      return isPrivateOrLinkLocalHost(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+    }
+    const mappedDotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(host);
+    if (mappedDotted) return isPrivateOrLinkLocalHost(mappedDotted[1]);
+    return false;
+  }
+  const parts = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!parts) return false; // a DNS name -- resolution is the transport's obligation
+  const a = Number(parts[1]);
+  const b = Number(parts[2]);
+  if (a === 10) return true;                       // 10.0.0.0/8
+  if (a === 127) return true;                      // 127.0.0.0/8 loopback
+  if (a === 0) return true;                        // 0.0.0.0/8
+  if (a === 169 && b === 254) return true;         // 169.254.0.0/16 link-local + metadata
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 168) return true;         // 192.168.0.0/16
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+  return false;
 }
 
 export function isUnspecifiedHost(hostname: string): boolean {

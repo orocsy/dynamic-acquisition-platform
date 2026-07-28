@@ -14,10 +14,10 @@ one wherever they conflict.**
   `main`.**
 - **Phase 3.6 (browser-backed resume auth recheck, LLD §9) is IMPLEMENTED but
   NOT MERGED.** Branch `phase3.6-resume-auth-recheck` = **PR #5**, head
-  `88754ec`, 17 commits ahead of `main`, 0 behind, MERGEABLE/CLEAN.
-- **362 tests pass**, `npm run check` green, three adversarial probes green.
-- The codex review loop has run **14 rounds / 73 findings, all fixed**. Round 15
-  was requested against `88754ec` and had not returned when this was written.
+  `45b41de`, 19 commits ahead of `main`, 0 behind, MERGEABLE/CLEAN.
+- **368 tests pass**, `npm run check` green, three adversarial probes green.
+- The codex review loop has run **15 rounds / 76 findings, all fixed**. Round 16
+  was requested against `45b41de` and had not returned when this was written.
 - Merging is a **user action** (as it was for PRs #3 and #4) and the loop has
   not yet returned a clean round.
 
@@ -37,15 +37,17 @@ you read nothing else:
 2. **Trap worth memorising:** `x === undefined ? {} : { x }` reads the getter
    **twice** and stores the **second** value — it silently defeats a snapshot
    and looks completely idiomatic. Read each field into a local first.
-3. **The finding count did not converge monotonically** (9→7→5→8→4→4→3→2→3→8→6→4→3→7).
-   Rounds 10–14 were largely the reviewer auditing my *own* round-8/9 fixes, and
+3. **The finding count did not converge monotonically** (9→7→5→8→4→4→3→2→3→8→6→4→3→7→3).
+   Rounds 10–15 were largely the reviewer auditing my *own* round-8/9 fixes, and
    found a regression in one and a bug inside another. New defensive machinery
    is itself new attack surface and needs its own review pass.
 4. **Redirect safety is a Phase 3.7 acceptance criterion, not optional
    hardening.** The URL gate covers the entry URL only; a redirect to a local
    service cannot be detected after the fact (the final URL is sanitized and
    loopback previews are dropped). Every real transport MUST re-check each
-   redirect destination with `isSafeNavigationTarget` before following it.
+   redirect destination with `isSafeNavigationTarget` before following it, and
+   validate the RESOLVED address at connect time (a DNS name that resolves into
+   a private range is invisible to the predicate).
 5. **Root cause worth fixing at the source:** `intentSnapshot` is typed
    `unknown` and the Intent contract constrains no schemes. Two separate
    findings (evidence intent attribution; `javascript:`/`file:`/loopback intent
@@ -57,7 +59,7 @@ you read nothing else:
 debug.** Three ports still have only `NotImplemented*` implementations:
 `CdpTargetTransport`, `AuthStateProbe`, `NetworkObservationSource`. The only
 component that touches a real browser is `ChromeDaemonClient` (`/json/version`
-health check). `examples/` is empty; there is no runnable entrypoint. The 362
+health check). `examples/` is empty; there is no runnable entrypoint. The 368
 tests prove classification/ordering/safety logic and nothing about the CDP wire
 protocol. Making a real browser run possible **is** the substance of Phase 3.7.
 

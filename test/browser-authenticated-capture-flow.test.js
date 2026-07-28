@@ -657,3 +657,26 @@ test('a stateful targetUrl getter cannot pass intent binding and then substitute
   assert.deepEqual(created, ['https://example.com/account']);
   assert.deepEqual(navigations, ['https://example.com/account']);
 });
+
+// Codex re-review of PR #5 round 8 (P1): the entry snapshot also CANONICALIZES daemonRef.id
+// to a primitive -- an object id with a stateful toString() could otherwise satisfy the J5
+// comparison and then be re-converted inside createTarget/the transport to a foreign daemon.
+test('a stateful daemonRef.id cannot pass the J5 check and recreate on a foreign daemon', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const recreatedObs = { ...safeObs('o1'), pageTargetRef: 'page:recreated-1' };
+  const session = new BrowserNetworkCaptureSession({ collect: async () => [recreatedObs] });
+  let recheckCalls = 0;
+  const rechecker = new FakeBrowserAuthRechecker(() => (++recheckCalls === 1 ? authRecheckFailure('target-stale') : { ok: true, confidence: 1, diagnostics: [] }));
+  const createdDaemonIds = [];
+  const pageTargets = { createTarget: async (i) => { createdDaemonIds.push(i.daemonRef.id); return { pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }; } };
+  let conversions = 0;
+  const shiftyId = { toString() { conversions += 1; return conversions === 1 ? 'daemon_1' : 'daemon_FOREIGN'; } };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker, session, pageTargets, recreationPolicy: () => true, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: { id: shiftyId, kind: 'local-chrome-daemon', mode: 'dedicated-daemon', healthUrlPreview: 'http://127.0.0.1:9222' }, sideEffectInProgress: false, now: NOW, completeRun: true },
+  );
+  assert.equal(conversions, 1); // toString ran ONCE, in the snapshot
+  assert.equal(result.outcome, 'completed');
+  assert.deepEqual(createdDaemonIds, ['daemon_1']); // the controller saw the SAME primitive the J5 check approved
+});

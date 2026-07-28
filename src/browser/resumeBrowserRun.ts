@@ -145,9 +145,17 @@ export async function resumeBrowserRun(
   // closed to `undefined`.)
   input = { ...input };
   // Same discipline one level down: daemonRef.id is compared against the registry's daemon
-  // (J5) and later read again inside createTarget -- a stateful `id` getter could satisfy the
-  // comparison and then recreate the target on a foreign daemon. Copy it to data properties.
-  if (input.daemonRef !== undefined && input.daemonRef !== null) input.daemonRef = { ...input.daemonRef };
+  // (J5) and later read again inside createTarget/the transport -- a stateful `id` getter OR
+  // an object-valued id with a stateful toString() could satisfy the comparison and then
+  // recreate the target on a foreign daemon. Copy the ref to data properties (each getter
+  // read once) and then CANONICALIZE the captured id to a string primitive in the copy, so
+  // its toString() also runs exactly once and every later read -- the J5 comparison, the
+  // policy, the controller, the transport -- sees that same immutable value.
+  if (input.daemonRef !== undefined && input.daemonRef !== null) {
+    const daemonRef = { ...input.daemonRef };
+    daemonRef.id = String(daemonRef.id);
+    input.daemonRef = daemonRef;
+  }
 
   // Validate ref SHAPES + OWNERSHIP BEFORE the resume transition: throwing here (no checkpoint
   // change yet) lets the caller fix the input and retry. After resumeRun commits to

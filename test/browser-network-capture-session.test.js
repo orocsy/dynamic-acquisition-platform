@@ -295,3 +295,27 @@ test('start() canonicalizes the runId once (stateful toString cannot split key a
   const result = await session.stop({ runId: 'run_A', pageTargetRef: 'page:t-1' });
   assert.deepEqual(result.observations, []);
 });
+
+// Codex re-review of PR #5 round 8 (P2): if the teardown capability DISAPPEARS while a debt
+// is unpaid (adaptive source dropping abortCapture after a transport failure), start() must
+// fail and RETAIN the debt -- not silently activate the window over the stale buffer.
+test('start() fails and retains the debt when the teardown capability disappears', async () => {
+  let attempts = 0;
+  const source = {
+    collect: async () => [],
+    // NO beginCapture on this source
+    abortCapture: async () => { attempts += 1; throw new Error('teardown failing'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await assert.rejects(() => session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /teardown failing/); // debt created
+  delete source.abortCapture; // capability vanishes
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/); // window stayed closed
+  // capability returns and succeeds -> the RETAINED debt is repaid and the window reopens
+  source.abortCapture = async () => { attempts += 1; };
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(attempts, 2); // failed once, repaid once
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.deepEqual(result.observations, []);
+});

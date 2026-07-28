@@ -156,10 +156,14 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
       // No reset is possible (the source has no beginCapture), so an unpaid teardown debt
       // means the stale pre-boundary buffer may still be live. REPAY it before reopening:
       // otherwise this restart would mark the window active over that buffer and stop()
-      // could collect it. A rejected repayment keeps the debt and fails the start.
-      if (this.#source.abortCapture) {
-        await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
+      // could collect it. A rejected repayment keeps the debt and fails the start. If the
+      // teardown capability itself has DISAPPEARED (an adaptive source dropping abortCapture
+      // after its transport failed), nothing can prove the buffer was discarded -- fail the
+      // start and RETAIN the debt rather than silently activating over stale traffic.
+      if (!this.#source.abortCapture) {
+        throw new Error('capture window has an unpaid teardown debt and the source can neither reset nor abort');
       }
+      await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
       this.#pendingTeardown.delete(key);
     }
     this.#active.add(key);

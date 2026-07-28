@@ -16,10 +16,10 @@ spec, and what is still deferred.
 |---|---|
 | Branch | `phase3.6-resume-auth-recheck` |
 | PR | #5 — **OPEN, not merged** as of 2026-07-28 |
-| Head | `f66e7a2` (15 commits ahead of `main`, 0 behind) |
-| Tests | **357 pass / 0 fail** (`npm test`) |
+| Head | `88754ec` (17 commits ahead of `main`, 0 behind) |
+| Tests | **362 pass / 0 fail** (`npm test`) |
 | Gates | `npm run check` green; three independent adversarial probes green |
-| Review | codex loop at **13 rounds, 66 findings, all fixed**; round 14 requested against `f66e7a2`, outstanding |
+| Review | codex loop at **14 rounds, 73 findings, all fixed**; round 15 requested against `88754ec`, outstanding |
 
 The merge is a **user action** — it has been permission-gated for every PR in
 this project (PRs #3 and #4 were merged by the user), and the review loop has
@@ -147,7 +147,10 @@ Both run before the first recheck, and both matter:
 1. **Authority** — a supplied `targetUrl` must equal the run's own intent URL
    from the resumed checkpoint's `intentSnapshot`. Ownership of the run,
    session, and page refs does not authorize a *destination*. Fails with
-   `url-not-intent`.
+   `url-not-intent`. An **omitted** `targetUrl` is *derived* from the intent
+   rather than treated as authorization — otherwise the probe would visit
+   whatever page the human left open and discovery navigation would be
+   skipped, letting a polling source record evidence from the wrong page.
 2. **Safety** — the URL must also pass `navigationPolicy.isSafeNavigationTarget`
    (absolute `http(s)` only, no userinfo, and neither a loopback nor an
    *unspecified* (`0.0.0.0`/`::`) host). Fails with `unsafe-target`.
@@ -176,7 +179,7 @@ port, or a swapped scheme.
 
 ---
 
-## 5. The review loop: 13 rounds, 66 findings
+## 5. The review loop: 14 rounds, 73 findings
 
 | Round | Findings | Commit |
 |---|---|---|
@@ -193,6 +196,7 @@ port, or a swapped scheme.
 | 11 | 6 | `50c9e72` |
 | 12 | 4 | `018129f` |
 | 13 | 3 | `f66e7a2` |
+| 14 | 7 | `88754ec` |
 
 **The count did not converge monotonically, and that is informative.** Rounds
 8–9 added new machinery (teardown debts, close-on-failure paths, URL gates), and
@@ -284,6 +288,22 @@ Recommended: constrain the Intent contract at the source (scheme allowlist on
 `target.value`, required `intentId`) as its own slice, **before** Phase 3.7.
 Patching each consumer does not fix the class.
 
+**Redirect safety is a transport obligation, not a flow guarantee.** The entry
+gate validates the URL the run starts from. If that allowed public URL responds
+with a redirect to `http://127.0.0.1:9222`, `http://0.0.0.0:9222`, or any other
+local service, following it is the same unsafe request the gate exists to
+prevent — and the flow cannot detect it after the fact, because
+`BasePageTargetController` sanitizes only the *final* URL and
+`sanitizeUrlPreview` deliberately drops loopback previews, so a followed
+redirect is indistinguishable downstream from "no preview available".
+
+Every real `CdpTargetTransport` / `AuthStateProbe` implementation **must**
+re-apply `isSafeNavigationTarget` to each redirect destination *before*
+following it, and abort the navigation when it fails. This is documented on the
+predicate itself. It is unenforced today only because those transports do not
+exist yet (§6) — **it is a Phase 3.7 acceptance criterion, not an optional
+hardening.**
+
 **In-memory session registry** ⇒ same-process resume only (inherited from 3.2,
 documented in `browserSessionRegistry.ts`).
 
@@ -315,3 +335,6 @@ deferrable, so plan for it to be the first slice with real browser exposure:
   an integration harness that a fixture suite cannot replace.
 - Everything in §5's four defect classes applies to the new transport code, and
   it will be handling genuinely untrusted remote input for the first time.
+- **Acceptance criterion carried over from the 3.6 review:** the transport must
+  re-check every redirect destination with `isSafeNavigationTarget` before
+  following it (§8). Nothing downstream can compensate for skipping this.

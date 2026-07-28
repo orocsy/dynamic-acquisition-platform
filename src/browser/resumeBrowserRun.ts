@@ -6,6 +6,7 @@ import type {
 import type { RunCheckpoint } from '../runtime';
 import { guardPageTargetRef, guardSurrogateSessionId } from './persistenceGuard';
 import { buildDaemonRef, daemonIdFromEndpoint, safeDaemonOrigin } from './daemonClient';
+import { isSafeNavigationTarget } from './navigationPolicy';
 import type { BrowserAuthRechecker, BrowserAuthRecheckResult } from './authRecheck';
 import { browserAuthRecheckMessage, isBrowserAuthRecheckFailureCode } from './authRecheck';
 import type { EvidenceRecordingCoordinator, BrowserNetworkCaptureFlowResult } from './browserCaptureFlow';
@@ -316,6 +317,19 @@ export async function resumeBrowserRun(
       'The supplied URL is not the acquisition intent URL.',
     );
   }
+  // AUTHORIZED is not the same as SAFE. `intentSnapshot` is stored as `unknown` and the Intent
+  // contract constrains no schemes, so a run could legitimately carry `javascript:`,
+  // `file://`, `data:` or a credential-bearing URL as its recorded intent -- and an exactly
+  // matching targetUrl would sail through the equality gate straight into the rechecker's
+  // navigating probe (script execution / local file read / leaked credentials). Allowlist the
+  // destination itself before ANY browser work.
+  if (typeof input.targetUrl === 'string' && input.targetUrl.length > 0 && !isSafeNavigationTarget(input.targetUrl)) {
+    return failTerminally(
+      'resume-url-unsafe',
+      'unsafe-target',
+      browserAuthRecheckMessage('unsafe-target'),
+    );
+  }
 
   // EVIDENCE ATTRIBUTION: the run's own intentSnapshot carries the authoritative intentId and
   // the normalizer copies whatever it is given straight onto every Evidence item. A caller
@@ -410,12 +424,17 @@ export async function resumeBrowserRun(
       });
       // The recreated ref must itself be a well-formed page ref before anything uses it.
       const createdRef = guardPageTargetRef('recreatedPageTargetRef', String(created.pageTargetRef)) as string;
+      // Track it BEFORE the state check: a target that came back in an unusable state was
+      // still CREATED, and the controller releases its transport resources only via
+      // closeTarget -- failing without recording the ref would leak the raw browser page.
+      recreatedTargetRef = createdRef;
       // The returned SNAPSHOT must also be usable. `createTarget` can legitimately resolve
       // with a `stale`/`closed` snapshot when a concurrent lifecycle op changes the reserved
       // target while the transport create is in flight; rebinding the authoritative session
       // to that target (and closing the old one) would strand the session on a dead page.
       // Require the expected `created` state before ANY rebind or close.
       if (created.state !== 'created') {
+        await closeTargetQuietly(createdRef);
         return failTerminally(
           'auth-recheck-target-recreation-unusable',
           'target-stale',
@@ -423,7 +442,6 @@ export async function resumeBrowserRun(
         );
       }
       activeTargetRef = createdRef;
-      recreatedTargetRef = createdRef;
       // REBIND the registry to the recreated target (K3): the record still points at the dead
       // stale ref, so a later resume/intervention would be rejected by the exact-ownership check
       // while the registry-approved old target is unusable. The registry stays authoritative.

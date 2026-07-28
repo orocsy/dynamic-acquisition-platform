@@ -1,4 +1,5 @@
 import { sanitizeUrlPreview } from './persistenceGuard';
+import { isLoopbackHost } from './daemonClient';
 
 /**
  * Phase 3.3 — navigation policy. Centralizes the knobs the LLD (§6.5) wants in
@@ -57,6 +58,33 @@ export type SafeRecreationInput = {
   sideEffectInProgress: boolean;
   policyAllowsRestart: boolean;
 };
+
+/**
+ * Is this URL safe to point a REAL (possibly authenticated) browser at?
+ *
+ * Distinct from `sanitizeUrlPreview`, which decides what may be PERSISTED. This decides what
+ * may be VISITED, and it is an allowlist: only absolute `http(s)` URLs, never `javascript:`,
+ * `file:`, `data:`, `chrome:`, `devtools:`, `ws(s):` (script execution / local file read /
+ * CDP control), never embedded credentials, and never a loopback host (the daemon's own CDP
+ * endpoint / an SSRF target, never a public acquisition target).
+ *
+ * Needed because a run's `intentSnapshot` is stored as `unknown` and the Intent contract does
+ * not constrain schemes: matching the recorded intent proves the URL is the AUTHORIZED one,
+ * not that it is a SAFE one. Both properties have to be checked before any navigation.
+ */
+export function isSafeNavigationTarget(url: unknown): boolean {
+  if (typeof url !== 'string' || url.length === 0) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false; // relative / non-absolute is not a navigable acquisition target
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  if (parsed.username !== '' || parsed.password !== '') return false;
+  if (isLoopbackHost(parsed.hostname)) return false;
+  return true;
+}
 
 export function isSafeToRecreateTarget(input: SafeRecreationInput): boolean {
   return input.hasOriginalIntentUrl && !input.sideEffectInProgress && input.policyAllowsRestart;

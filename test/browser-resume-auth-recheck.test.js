@@ -268,3 +268,18 @@ test('per-field navigation getters cannot assemble a passing verdict', async () 
   assert.equal(statusReads, 1); // read exactly once, into the snapshot
   assert.equal(r.ok, false); // the single snapshot said 401 -> boundary persists
 });
+
+// Codex re-review of PR #5 round 12 (P1): a DEFINED status must be a finite PRIMITIVE number.
+// Treating '401' / new Number(401) / NaN as an absent optional let a malformed or hostile
+// probe skip both the detector's unauthorized-status rule and the usability check.
+test('a defined non-numeric navigation status fails closed', async () => {
+  for (const status of ['401', '200', new Number(200), NaN, Infinity, null, {}]) {
+    const nav = { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [], status };
+    const r = await new DetectorBackedAuthRechecker(probeOf({ navigation: nav })).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+    assert.equal(r.ok, false, `status ${String(status)} must not authenticate`);
+    assert.equal(r.diagnostics[0].code, 'auth-recheck-target-not-usable');
+  }
+  // an OMITTED status is still acceptable (the optional field), as is a real numeric one
+  const omitted = { ok: true, pageTargetRef: 'page:t-1', state: 'ready', diagnostics: [] };
+  assert.equal((await new DetectorBackedAuthRechecker(probeOf({ navigation: omitted })).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' })).ok, true);
+});

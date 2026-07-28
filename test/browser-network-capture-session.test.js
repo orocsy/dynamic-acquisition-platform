@@ -406,3 +406,20 @@ test('a failed restart reset tears down the previously active window', async () 
   assert.deepEqual(calls, ['begin', 'begin', 'abort']);
   await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
 });
+
+// Codex re-review of PR #5 round 12 (P2): a begin-capable-but-NOT-abort-capable window is
+// buffer-backed, so it owes cleanup too. If that adaptive source later loses beginCapture, a
+// restart must not reactivate the key over the unreset pre-boundary buffer.
+test('a begin-capable window still owes cleanup after its reset hook disappears', async () => {
+  const source = {
+    collect: async () => [{ id: 'stale-1', runId: 'run_1', pageTargetRef: 'page:t-1', source: 'cdp', capturedAt: '2026-07-15T02:00:00.000Z', request: { url: 'https://api.example.com/v1/x', method: 'GET' }, response: { status: 200 } }],
+    beginCapture: () => {}, // reset hook, but NO abortCapture
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // buffer-backed window
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // owes cleanup, cannot repay
+  delete source.beginCapture; // the source loses its reset hook too
+  // With neither a reset nor a teardown available, the window must NOT reopen over the buffer.
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /neither reset nor abort/);
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});

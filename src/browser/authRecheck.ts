@@ -297,10 +297,17 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
     // Positive usability evidence: a navigation that actually loaded a non-error page. No such
     // evidence -> do NOT report success (an unrecognized-but-broken page must not pass). This
     // is the SAME `navigation` value the detector saw (snapshotted above).
-    const usable =
-      navigation !== undefined &&
-      navigation.ok === true &&
-      (typeof navigation.status !== 'number' || (navigation.status >= 200 && navigation.status < 400));
+    // A DEFINED status must be a FINITE PRIMITIVE number in the success range. Treating a
+    // non-numeric status ('401', new Number(401), NaN) as "absent optional" let a malformed or
+    // hostile probe skip both the detector's unauthorized-status rule and this check and still
+    // be reported as authenticated. Absent stays acceptable; anything defined-but-not-a-number
+    // fails closed.
+    const status: unknown = navigation?.status;
+    const statusUsable =
+      status === undefined
+        ? true
+        : typeof status === 'number' && Number.isFinite(status) && status >= 200 && status < 400;
+    const usable = navigation !== undefined && navigation.ok === true && statusUsable;
     if (!usable || navigation === undefined) {
       return authRecheckFailure('still-unauthorized', [{ level: 'info', code: 'auth-recheck-target-not-usable' }]);
     }

@@ -246,3 +246,25 @@ test('a mutating probe result cannot assemble a passing verdict from two reads',
   assert.equal(r.ok, false); // the single snapshot had no usable navigation
   assert.equal(r.diagnostics[0].code, 'auth-recheck-target-not-usable');
 });
+
+// Codex re-review of PR #5 round 11 (P2): the navigation's SCALAR FIELDS are snapshotted, not
+// just its object reference -- a `status` getter could otherwise answer `undefined` to the
+// detector's unauthorized-status scan and `200` to the usability check.
+test('per-field navigation getters cannot assemble a passing verdict', async () => {
+  let statusReads = 0;
+  const shifty = {
+    probe: async () => ({
+      navigation: {
+        ok: true,
+        pageTargetRef: 'page:t-1',
+        state: 'ready',
+        diagnostics: [],
+        get status() { statusReads += 1; return statusReads === 1 ? 401 : 200; },
+      },
+      observations: [],
+    }),
+  };
+  const r = await new DetectorBackedAuthRechecker(shifty).recheck({ runId: 'r', browserSessionRef: 'session:a', pageTargetRef: 'page:t-1' });
+  assert.equal(statusReads, 1); // read exactly once, into the snapshot
+  assert.equal(r.ok, false); // the single snapshot said 401 -> boundary persists
+});

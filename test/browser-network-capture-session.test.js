@@ -386,3 +386,23 @@ test('a slow abort cannot tear down a window opened by a concurrent start', asyn
   const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' });
   assert.deepEqual(result.observations, []);
 });
+
+// Codex re-review of PR #5 round 11 (P2): a FAILED re-start of an ACTIVE window leaves the
+// old source window possibly buffering while the active key is already gone -- nothing
+// downstream could reclaim it. The failed reset now records (and repays) the teardown.
+test('a failed restart reset tears down the previously active window', async () => {
+  const calls = [];
+  let failReset = false;
+  const source = {
+    collect: async () => [],
+    beginCapture: () => { calls.push('begin'); if (failReset) throw new Error('reset failed'); },
+    abortCapture: async () => { calls.push('abort'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }); // window active
+  failReset = true;
+  await assert.rejects(() => session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /reset failed/);
+  // the OLD window was torn down rather than left buffering
+  assert.deepEqual(calls, ['begin', 'begin', 'abort']);
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+});

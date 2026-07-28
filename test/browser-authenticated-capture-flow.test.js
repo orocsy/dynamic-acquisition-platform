@@ -804,3 +804,90 @@ test('recreation is blocked when a transport-relevant daemon field is substitute
     assert.equal(result.outcome, 'recheck-failed');
   }
 });
+
+// ---- Codex re-review of PR #5 round 11 ----
+
+// P1: a DEFINED but non-primitive targetUrl (boxed String / object with toString) used to
+// skip the `typeof === 'string'` intent check entirely and still reach the navigating probe.
+test('a non-primitive targetUrl is refused before the recheck', async () => {
+  for (const hostile of [new String('https://evil.example.com/exfil'), { toString: () => 'https://example.com/account' }]) {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator);
+    let recheckCalls = 0;
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker(() => { recheckCalls += 1; return { ok: true, confidence: 1, diagnostics: [] }; }),
+        session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: hostile, now: NOW },
+    );
+    assert.equal(result.outcome, 'recheck-failed');
+    assert.equal(result.recheckCode, 'url-not-intent');
+    assert.equal(recheckCalls, 0); // never reached the probe
+  }
+});
+
+// P1: the daemon binding pins the endpoint SCHEME too -- daemonIdFromEndpoint derives from
+// host:port only, so an approved http origin would otherwise also accept an https one and
+// that caller-chosen scheme would ride through to the transport.
+test('recreation is blocked when only the daemon endpoint scheme is substituted', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  let created = 0;
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker(authRecheckFailure('target-stale')), session: await startedSession([safeObs('o1')]),
+      pageTargets: { createTarget: async () => { created += 1; return { pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }; } },
+      recreationPolicy: () => true, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: { ...DAEMON_REF, healthUrlPreview: 'https://127.0.0.1:9222' }, sideEffectInProgress: false, now: NOW },
+  );
+  assert.equal(created, 0);
+  assert.equal(result.outcome, 'recheck-failed');
+});
+
+// P2: a failed discovery navigation AFTER a successful recreation must close the replacement
+// too -- the original is closed at creation time, but navigate() only marks the new one stale.
+test('a discovery navigation failure after recreation closes the replacement', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const closed = [];
+  let recheckCalls = 0;
+  const rechecker = new FakeBrowserAuthRechecker(() => (++recheckCalls === 1 ? authRecheckFailure('target-stale') : { ok: true, confidence: 1, diagnostics: [] }));
+  const session = { start: async () => {}, abort: async () => {}, stop: async () => ({ observations: [], diagnostics: [] }), listObservations: async () => [] };
+  const pageTargets = {
+    createTarget: async () => ({ pageTargetRef: 'page:recreated-1', state: 'created', updatedAt: NOW }),
+    closeTarget: async (ref) => { closed.push(ref); },
+    navigate: async () => ({ ok: false, pageTargetRef: 'page:recreated-1', state: 'stale', diagnostics: [] }),
+  };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker, session, pageTargets, recreationPolicy: () => true, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: DAEMON_REF, sideEffectInProgress: false, now: NOW },
+  );
+  assert.equal(result.outcome, 'discovery-failed');
+  assert.deepEqual(closed, ['page:t-1', 'page:recreated-1']);
+});
+
+// P2: evidence intent attribution is bound to the resumed checkpoint. A caller-supplied
+// intentId from ANOTHER acquisition passes every ownership check but would be copied onto
+// every Evidence item by the normalizer.
+test('a foreign intentId is refused; the run intent is authoritative', async () => {
+  const withIntent = { intentId: 'intent_mine_001', target: { kind: 'url', value: 'https://example.com/account' } };
+  // a mismatching supplied intent is refused outright
+  {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator, 'run_ac_001', withIntent);
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', intentId: 'intent_someone_else_999', now: NOW },
+    );
+    assert.equal(result.outcome, 'recheck-failed');
+    assert.equal(result.recheckCode, 'intent-mismatch');
+  }
+  // the matching one proceeds
+  {
+    const { coordinator } = makeCoordinator();
+    const { requestId, completed } = await toCompletedIntervention(coordinator, 'run_ac_001', withIntent);
+    const result = await resumeBrowserRun(
+      { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session: await startedSession([safeObs('o1')]), sessionRegistry: defaultRegistry() },
+      { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', intentId: 'intent_mine_001', now: NOW },
+    );
+    assert.equal(result.outcome, 'evidence-recorded');
+  }
+});

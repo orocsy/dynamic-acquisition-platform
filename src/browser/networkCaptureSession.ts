@@ -176,9 +176,30 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
       // source's begin/reset, and re-add the key ONLY after a successful reset -- so if
       // beginCapture rejects, a later stop() cannot collect the old, pre-boundary buffer. (A
       // fixture source omits beginCapture; the delete+add is then a no-op round-trip.)
-      this.#active.delete(key);
+      const wasActive = this.#active.delete(key);
       if (this.#source.beginCapture) {
-        await this.#source.beginCapture({ runId, pageTargetRef: expectedTarget });
+        try {
+          await this.#source.beginCapture({ runId, pageTargetRef: expectedTarget });
+        } catch (error) {
+          // A FAILED re-start of an ACTIVE window leaves the OLD source window possibly still
+          // buffering, and the active key is already gone -- so nothing downstream could ever
+          // reclaim it (a later abort() would see no window, and the caller never got a
+          // resolved start() to pair an abort with). Record the teardown debt for that old
+          // window and repay it here if we can; either way the debt survives for a later
+          // retry, and the original reset failure is what the caller sees.
+          if (wasActive && this.#teardownCapable.has(key)) {
+            this.#pendingTeardown.add(key);
+            if (this.#source.abortCapture) {
+              try {
+                await this.#source.abortCapture({ runId, pageTargetRef: expectedTarget });
+                this.#pendingTeardown.delete(key);
+              } catch {
+                // keep the debt -- a later start()/abort() retries the teardown
+              }
+            }
+          }
+          throw error;
+        }
         // An ACTUAL successful reset supersedes any outstanding teardown debt: the source's
         // buffer for this window was just dropped, so there is nothing stale left to discard.
         this.#pendingTeardown.delete(key);

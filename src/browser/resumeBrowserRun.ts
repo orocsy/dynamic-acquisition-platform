@@ -298,6 +298,17 @@ export async function resumeBrowserRun(
     intentTarget.kind === 'url' &&
     typeof intentTarget.value === 'string' &&
     intentTarget.value === input.targetUrl;
+  // A DEFINED but non-primitive targetUrl (e.g. `new String(...)`, or an object with
+  // toString()) would make the `typeof` comparison below false, skip the intent check
+  // entirely, and still be forwarded to the rechecker's navigating probe, where a transport
+  // coerces it to the substituted destination. Fail closed on the type itself.
+  if (input.targetUrl !== undefined && typeof input.targetUrl !== 'string') {
+    return failTerminally(
+      'resume-url-unauthorized',
+      'url-not-intent',
+      'The supplied URL is not the acquisition intent URL.',
+    );
+  }
   if (typeof input.targetUrl === 'string' && input.targetUrl.length > 0 && !targetUrlIsOriginalIntent) {
     return failTerminally(
       'resume-url-unauthorized',
@@ -305,6 +316,22 @@ export async function resumeBrowserRun(
       'The supplied URL is not the acquisition intent URL.',
     );
   }
+
+  // EVIDENCE ATTRIBUTION: the run's own intentSnapshot carries the authoritative intentId and
+  // the normalizer copies whatever it is given straight onto every Evidence item. A caller
+  // passing another acquisition's intentId would pass every run/session/target/URL ownership
+  // check and still mis-attribute this run's discovery evidence, so the authoritative value
+  // WINS and a mismatching supplied value is refused outright.
+  const snapshotIntentId = (resumed.intentSnapshot as { intentId?: unknown } | null | undefined)?.intentId;
+  const authoritativeIntentId = typeof snapshotIntentId === 'string' && snapshotIntentId.length > 0 ? snapshotIntentId : undefined;
+  if (input.intentId !== undefined && input.intentId !== authoritativeIntentId) {
+    return failTerminally(
+      'resume-intent-mismatch',
+      'intent-mismatch',
+      'The supplied intent does not match the acquisition being resumed.',
+    );
+  }
+  const effectiveIntentId = authoritativeIntentId;
 
   // Every post-transition step is wrapped: a thrown error (rechecker/probe/controller) must
   // become a TERMINAL failure, not a stranded running_after_resume checkpoint (§9.4).
@@ -350,6 +377,13 @@ export async function resumeBrowserRun(
       } catch {
         return { ok: false };
       }
+      // `daemonIdFromEndpoint` derives from host:port ONLY, so an approved
+      // `http://127.0.0.1:9222` record would equally accept a caller-supplied
+      // `https://127.0.0.1:9222` and that caller-chosen scheme would ride through to the
+      // transport. A local-chrome-daemon's CDP endpoint is plain http on loopback (see
+      // docs/stable-chrome-daemon.md and DEFAULT_DAEMON_ENDPOINT), so pin the scheme rather
+      // than leaving one transport-relevant field unbound.
+      if (!origin.startsWith('http://')) return { ok: false };
       if (daemonIdFromEndpoint(origin) !== recordDaemonId) return { ok: false };
       // Rebuild a CANONICAL ref from the validated origin + registry-approved mode, so no
       // extra caller-controlled property reaches the controller/transport.
@@ -473,6 +507,9 @@ export async function resumeBrowserRun(
         // to a later stop(). Then fail in the DISCOVERY phase (K6) -- auth already passed.
         await teardownWindow(captureTargetRef);
         openWindowRef = undefined;
+        // A replacement target this flow created is orphaned by this terminal failure too --
+        // navigate() only marks it stale, so the raw page would stay live.
+        await closeTargetQuietly(recreatedTargetRef);
         return failTerminally(
           'discovery-navigation-failed',
           'discovery-nav-failed',
@@ -489,7 +526,7 @@ export async function resumeBrowserRun(
         expectedVersion: confirmed.version,
         now: input.now,
         targetUrl: input.targetUrl,
-        intentId: input.intentId,
+        intentId: effectiveIntentId,
         browserSessionRef: sessionRef,
         priorEvidenceRefs: confirmed.evidenceRefs,
         // Record that discovery is the last completed step so a multi-step executor resumes at

@@ -250,8 +250,33 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
     // empty navigation (no boundary signal) and then a successful one to the usability /
     // target-binding checks would yield `ok: true` even though NO single probe result ever
     // established both "no auth boundary" AND "reachable". Every check below reads these.
-    const navigation = observed?.navigation;
-    const observations = observed?.observations;
+    // Copy the navigation's SCALAR FIELDS, not just its object reference: snapshotting only
+    // the reference still lets per-field getters be evaluated separately by the detector and
+    // the usability check (a `status` getter could answer `undefined` to the "is this a 401?"
+    // scan and `200` to the usability test, assembling a passing verdict from observations
+    // that never formed one stable result).
+    const rawNavigation = observed?.navigation;
+    let navigation: BrowserNavigationResult | undefined;
+    if (rawNavigation !== null && rawNavigation !== undefined) {
+      // Read EACH field exactly once into a local before building the snapshot: a
+      // `field === undefined ? {} : { field }` ternary would read the getter TWICE and store
+      // the SECOND value, which is precisely the mutation this snapshot exists to defeat.
+      const status = rawNavigation.status;
+      const finalUrlPreview = rawNavigation.finalUrlPreview;
+      const durationMs = rawNavigation.durationMs;
+      const diagnostics = rawNavigation.diagnostics;
+      navigation = {
+        ok: rawNavigation.ok,
+        pageTargetRef: String(rawNavigation.pageTargetRef),
+        state: rawNavigation.state,
+        ...(status === undefined ? {} : { status }),
+        ...(finalUrlPreview === undefined ? {} : { finalUrlPreview }),
+        ...(durationMs === undefined ? {} : { durationMs }),
+        diagnostics: Array.isArray(diagnostics) ? [...diagnostics] : [],
+      };
+    }
+    const rawObservations = observed?.observations;
+    const observations = Array.isArray(rawObservations) ? [...rawObservations] : rawObservations;
     const pageTextPreview = observed?.pageTextPreview;
 
     const detection = this.#detector.detect({ navigation, observations, pageTextPreview });
@@ -273,10 +298,10 @@ export class DetectorBackedAuthRechecker implements BrowserAuthRechecker {
     // evidence -> do NOT report success (an unrecognized-but-broken page must not pass). This
     // is the SAME `navigation` value the detector saw (snapshotted above).
     const usable =
-      !!navigation &&
+      navigation !== undefined &&
       navigation.ok === true &&
       (typeof navigation.status !== 'number' || (navigation.status >= 200 && navigation.status < 400));
-    if (!usable) {
+    if (!usable || navigation === undefined) {
       return authRecheckFailure('still-unauthorized', [{ level: 'info', code: 'auth-recheck-target-not-usable' }]);
     }
 

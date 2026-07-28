@@ -216,6 +216,18 @@ export async function resumeBrowserRun(
     return failTerminally('auth-recheck-session-mismatch', 'session-mismatch', 'The supplied browser session is not bound to this run.');
   }
 
+  // Close an opened capture window even on a session WITHOUT the optional abort() (K4): a
+  // buffering transport must not keep accumulating for a terminal run just because the
+  // injected session predates abort. stop() also ends the window; every caller of this helper
+  // deliberately DISCARDS its result -- nothing collected here is ever recorded as evidence.
+  const teardownWindow = async (ref: string): Promise<void> => {
+    if (deps.session.abort) {
+      await deps.session.abort({ runId: input.runId, pageTargetRef: ref, now: input.now });
+    } else {
+      await deps.session.stop({ runId: input.runId, pageTargetRef: ref, now: input.now });
+    }
+  };
+
   // Set once confirmResumeAuthRecheck has COMMITTED the passed auth event: any later throw
   // must be classified as a DISCOVERY failure (K6) -- emitting `authRecheck: 'failed'` /
   // `recheck-failed` after that point would contradict the already-committed event stream.
@@ -250,6 +262,20 @@ export async function resumeBrowserRun(
       sessionRecord !== undefined &&
       input.daemonRef !== undefined &&
       String(sessionRecord.daemonId) === String(input.daemonRef.id);
+    // §9.5 ORIGINAL-INTENT binding: the run's own intentSnapshot (carried on the RESUMED
+    // checkpoint, fixed at createRun time) is the only authority for the URL this acquisition
+    // was created to visit. Recreation is limited to EXACTLY that URL -- the caller-supplied
+    // targetUrl is otherwise unbound, so a caller holding valid run/session/page refs could
+    // recreate an authenticated target at a substituted destination and the policy would be
+    // approving the run's known-safe intent while the browser opens somewhere else. Fail
+    // closed when the intent target is missing or not a URL.
+    const intentTarget = (resumed.intentSnapshot as { target?: { kind?: unknown; value?: unknown } } | null | undefined)?.target;
+    const recreationUrlIsOriginalIntent =
+      intentTarget !== null &&
+      intentTarget !== undefined &&
+      intentTarget.kind === 'url' &&
+      typeof intentTarget.value === 'string' &&
+      intentTarget.value === input.targetUrl;
     if (
       snapshot.ok === false &&
       snapshot.code === 'target-stale' &&
@@ -257,6 +283,7 @@ export async function resumeBrowserRun(
       deps.recreationPolicy &&
       typeof input.targetUrl === 'string' &&
       input.targetUrl.length > 0 &&
+      recreationUrlIsOriginalIntent &&
       input.daemonRef !== undefined &&
       recreationDaemonBound &&
       input.sideEffectInProgress === false &&
@@ -334,12 +361,10 @@ export async function resumeBrowserRun(
         navigated = false;
       }
       if (!navigated) {
-        // ABORT the window we just opened (K4): the run is terminal, so leaving it active would
-        // keep a buffering transport accumulating traffic and expose stale observations to a
-        // later stop(). Then fail in the DISCOVERY phase (K6) -- auth already passed.
-        if (deps.session.abort) {
-          await deps.session.abort({ runId: input.runId, pageTargetRef: captureTargetRef, now: input.now });
-        }
+        // TEAR DOWN the window we just opened (K4): the run is terminal, so leaving it active
+        // would keep a buffering transport accumulating traffic and expose stale observations
+        // to a later stop(). Then fail in the DISCOVERY phase (K6) -- auth already passed.
+        await teardownWindow(captureTargetRef);
         openWindowRef = undefined;
         return failTerminally(
           'discovery-navigation-failed',
@@ -408,11 +433,11 @@ export async function resumeBrowserRun(
     // (nothing safe remains).
     //
     // A window still open here (start succeeded but the capture flow's stop() never completed)
-    // is aborted BEST-EFFORT first (K4) so a buffering transport stops accumulating; an abort
-    // failure must never mask the markFailed below.
-    if (openWindowRef !== undefined && deps.session.abort) {
+    // is torn down BEST-EFFORT first (K4) so a buffering transport stops accumulating; a
+    // teardown failure must never mask the markFailed below.
+    if (openWindowRef !== undefined) {
       try {
-        await deps.session.abort({ runId: input.runId, pageTargetRef: openWindowRef, now: input.now });
+        await teardownWindow(openWindowRef);
       } catch {
         // best-effort only -- the terminal markFailed still runs
       }

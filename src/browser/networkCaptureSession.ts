@@ -122,6 +122,10 @@ function pickSafeObservation(observation: BrowserObservation): BrowserObservatio
 export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
   readonly #source: NetworkObservationSource;
   readonly #active = new Set<string>();
+  // Teardown debts: windows whose active key was dropped by abort() but whose source
+  // teardown (abortCapture) has not yet SUCCEEDED. Tracked separately from #active so a
+  // rejected teardown stays retryable (see abort()).
+  readonly #pendingTeardown = new Set<string>();
   readonly #observations = new Map<string, BrowserObservation[]>();
 
   constructor(source: NetworkObservationSource = new NotImplementedNetworkObservationSource()) {
@@ -129,8 +133,12 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
   }
 
   async start(input: StartNetworkCaptureInput): Promise<void> {
-    const key = this.#key(input.runId, input.pageTargetRef);
+    // Canonicalize the target ONCE and derive the window key from that exact string: a caller
+    // ref with a stateful toString() could otherwise register one page as active while asking
+    // the source to reset a DIFFERENT page, so a later stop() for the registered page would
+    // pass the active check and collect its unreset, pre-boundary buffer.
     const expectedTarget = String(input.pageTargetRef);
+    const key = this.#key(input.runId, expectedTarget);
     // INVALIDATE the window before resetting: even a RE-start of an already-active window must
     // not leave the old key live if the reset fails. Drop the key first, run the source's
     // begin/reset, and re-add the key ONLY after a successful reset -- so if beginCapture
@@ -141,15 +149,18 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
       await this.#source.beginCapture({ runId: input.runId, pageTargetRef: expectedTarget });
     }
     this.#active.add(key);
+    // A successful (re)start supersedes any outstanding teardown debt: the source's window
+    // for this key has just been reset, so there is no stale buffer left to discard.
+    this.#pendingTeardown.delete(key);
   }
 
   async stop(input: StopNetworkCaptureInput): Promise<NetworkCaptureResult> {
-    const key = this.#key(input.runId, input.pageTargetRef);
+    // Same canonicalize-once discipline as start(): key and source calls share one snapshot.
+    const expectedTarget = String(input.pageTargetRef);
+    const key = this.#key(input.runId, expectedTarget);
     if (!this.#active.has(key)) {
       throw new Error('network capture stop requires a prior start for this run/pageTargetRef');
     }
-
-    const expectedTarget = String(input.pageTargetRef);
     // Collect BEFORE clearing the active window, so a transient collect failure leaves the
     // capture retryable (stop() can be called again) instead of failing 'requires a prior
     // start' forever.
@@ -191,12 +202,22 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
    * Close the window without collecting: the active key is dropped FIRST (so a later stop()
    * is rejected even if the source's teardown throws), then the source is told to discard its
    * buffer. Nothing is stored or returned — an aborted window contributes no observations.
+   *
+   * The source teardown is tracked as a SEPARATE debt until abortCapture() succeeds: dropping
+   * only the active key meant a rejected teardown made a RETRY of abort() see "no window" and
+   * skip the source call forever, leaving a real transport live and buffering for a run that
+   * is already terminal. A retried abort() re-attempts the teardown until it succeeds (or the
+   * window is legitimately restarted, which resets the source's buffer anyway).
    */
   async abort(input: StopNetworkCaptureInput): Promise<void> {
-    const key = this.#key(input.runId, input.pageTargetRef);
+    const expectedTarget = String(input.pageTargetRef);
+    const key = this.#key(input.runId, expectedTarget);
     const hadWindow = this.#active.delete(key);
-    if (hadWindow && this.#source.abortCapture) {
-      await this.#source.abortCapture({ runId: input.runId, pageTargetRef: String(input.pageTargetRef) });
+    if (!this.#source.abortCapture) return;
+    if (hadWindow) this.#pendingTeardown.add(key);
+    if (this.#pendingTeardown.has(key)) {
+      await this.#source.abortCapture({ runId: input.runId, pageTargetRef: expectedTarget });
+      this.#pendingTeardown.delete(key);
     }
   }
 
@@ -204,7 +225,9 @@ export class BrowserNetworkCaptureSession implements NetworkCaptureSession {
     return [...(this.#observations.get(runId) ?? [])];
   }
 
-  #key(runId: string, pageTargetRef: PageTargetRef | string): string {
-    return JSON.stringify([runId, String(pageTargetRef)]);
+  // Takes the ALREADY-canonicalized target string: every public method converts the caller's
+  // ref exactly once and passes that snapshot here (never the raw input).
+  #key(runId: string, pageTargetRef: string): string {
+    return JSON.stringify([runId, pageTargetRef]);
   }
 }

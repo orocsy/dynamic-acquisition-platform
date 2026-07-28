@@ -38,8 +38,8 @@ function makeCoordinator() {
 
 // Drive a run to a COMPLETED intervention (ready for resumeBrowserRun). Returns the completed
 // checkpoint (its version is resumeBrowserRun's expectedVersion) + the requestId.
-async function toCompletedIntervention(coordinator, runId = 'run_ac_001') {
-  await coordinator.createRun({ runId, intentSnapshot: { target: { kind: 'url', value: 'https://example.com/account' } }, artifactRefs: ['artifact_before_auth'] });
+async function toCompletedIntervention(coordinator, runId = 'run_ac_001', intentSnapshot = { target: { kind: 'url', value: 'https://example.com/account' } }) {
+  await coordinator.createRun({ runId, intentSnapshot, artifactRefs: ['artifact_before_auth'] });
   await coordinator.markRunning({ runId, expectedVersion: 1, phase: 'auth_boundary_detected', evidenceRefs: ['evidence_auth_boundary'] });
   const requested = await coordinator.requestHumanIntervention({
     runId, expectedVersion: 2, kind: 'login-required', reason: 'Login required.', instructions: ['Complete login.'], nextStepId: 'auth_state_recheck', browserSessionRef: 'session:abc-1',
@@ -193,7 +193,8 @@ test('a failed discovery navigation fails the run before capture', async () => {
   const { coordinator } = makeCoordinator();
   const { requestId, completed } = await toCompletedIntervention(coordinator);
   let stopped = false;
-  const session = { start: async () => {}, stop: async () => { stopped = true; return { observations: [], diagnostics: [] }; }, listObservations: async () => [] };
+  let aborted = false;
+  const session = { start: async () => {}, abort: async () => { aborted = true; }, stop: async () => { stopped = true; return { observations: [], diagnostics: [] }; }, listObservations: async () => [] };
   const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => ({ ok: false, pageTargetRef: 'page:t-1', state: 'stale', diagnostics: [] }) };
   const result = await resumeBrowserRun(
     { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
@@ -204,7 +205,8 @@ test('a failed discovery navigation fails the run before capture', async () => {
   assert.equal(result.recheckOk, true);
   assert.equal(result.recheckCode, 'discovery-nav-failed');
   assert.equal(result.checkpoint.status, 'failed');
-  assert.equal(stopped, false); // capture never ran
+  assert.equal(stopped, false); // capture never ran (the abort-capable session aborted instead)
+  assert.equal(aborted, true);
 });
 
 test('stale target WITHOUT a permitting policy fails safely (no recreation)', async () => {
@@ -558,4 +560,66 @@ test('a throw inside the capture flow aborts the still-open window and fails as 
   assert.equal(result.outcome, 'discovery-failed');
   assert.equal(result.recheckCode, 'discovery-error');
   assert.deepEqual(calls, ['start', 'stop', 'abort']); // stop failed -> abort before markFailed
+});
+
+// Codex re-review of PR #5 round 6 (P1): stale-target recreation is bound to the run's OWN
+// intent URL (the intentSnapshot fixed at createRun). A caller with valid run/session/page
+// refs must not be able to substitute a different URL and have an authenticated target
+// recreated at that destination under a policy that approved the original intent (§9.5).
+test('recreation is blocked when targetUrl is not the run original intent URL', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator); // intent: https://example.com/account
+  let created = 0;
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker(authRecheckFailure('target-stale')), session: await startedSession([safeObs('o1')]),
+      pageTargets: { createTarget: async () => { created += 1; return { pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }; } },
+      recreationPolicy: () => true,
+      sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://evil.example.com/account', daemonRef: { id: 'daemon_1', kind: 'local-chrome-daemon', mode: 'dedicated-daemon', healthUrlPreview: 'http://127.0.0.1:9222' }, sideEffectInProgress: false, now: NOW },
+  );
+  assert.equal(result.outcome, 'recheck-failed'); // stale target, no recreation attempted
+  assert.equal(created, 0);
+});
+
+// Same §9.5 binding, fail-closed side: a run whose intentSnapshot carries no URL target
+// (missing / non-url kind) never authorizes recreation, whatever URL the caller supplies.
+test('recreation is blocked when the run intent has no URL target (fail closed)', async () => {
+  const { coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator, 'run_ac_001', { target: { kind: 'app', value: 'https://example.com/account' } });
+  let created = 0;
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker(authRecheckFailure('target-stale')), session: await startedSession([safeObs('o1')]),
+      pageTargets: { createTarget: async () => { created += 1; return { pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }; } },
+      recreationPolicy: () => true,
+      sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://example.com/account', daemonRef: { id: 'daemon_1', kind: 'local-chrome-daemon', mode: 'dedicated-daemon', healthUrlPreview: 'http://127.0.0.1:9222' }, sideEffectInProgress: false, now: NOW },
+  );
+  assert.equal(result.outcome, 'recheck-failed');
+  assert.equal(created, 0);
+});
+
+// Codex re-review of PR #5 round 6 (P2): a session WITHOUT the optional abort() must still
+// tear the window down on a failed discovery navigation -- stop() ends the window and its
+// result is DISCARDED (nothing normalized/recorded for the terminal run).
+test('a session without abort tears the window down via stop() on navigation failure', async () => {
+  const { checkpointStore, coordinator } = makeCoordinator();
+  const { requestId, completed } = await toCompletedIntervention(coordinator);
+  const calls = [];
+  const session = {
+    start: async () => calls.push('start'),
+    // NO abort method on this session
+    stop: async () => { calls.push('stop'); return { observations: [safeObs('o1')], diagnostics: [] }; },
+    listObservations: async () => [],
+  };
+  const pageTargets = { createTarget: async () => ({ pageTargetRef: 'page:x', state: 'created', updatedAt: NOW }), navigate: async () => ({ ok: false, pageTargetRef: 'page:t-1', state: 'stale', diagnostics: [] }) };
+  const result = await resumeBrowserRun(
+    { coordinator, rechecker: new FakeBrowserAuthRechecker({ ok: true, confidence: 1, diagnostics: [] }), session, pageTargets, sessionRegistry: defaultRegistry() },
+    { runId: 'run_ac_001', expectedVersion: completed.checkpoint.version, requestId, browserSessionRef: 'session:abc-1', pageTargetRef: 'page:t-1', targetUrl: 'https://api.example.com/account', now: NOW },
+  );
+  assert.equal(result.outcome, 'discovery-failed');
+  assert.equal(result.recheckCode, 'discovery-nav-failed');
+  assert.deepEqual(calls, ['start', 'stop']); // window closed via the stop() fallback
+  // the discarded stop() result was never recorded as evidence
+  const events = (await checkpointStore.listEvents('run_ac_001')).map((e) => e.type);
+  assert.equal(events.includes('evidence.normalized'), false);
 });

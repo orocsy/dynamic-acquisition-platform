@@ -216,3 +216,43 @@ test('abort() discards the window without collecting', async () => {
   await session.abort({ runId: 'run_1', pageTargetRef: 'page:never' });
   assert.deepEqual(calls, ['begin', 'abort']);
 });
+
+// Codex re-review of PR #5 round 6 (P2): a REJECTED source abortCapture() must leave the
+// teardown retryable. Deleting only the active key meant the retry saw "no window", skipped
+// the source call, and the transport stayed live and buffering for a terminal run.
+test('a rejected source abortCapture keeps the teardown retryable', async () => {
+  let attempts = 0;
+  const source = {
+    collect: async () => [],
+    abortCapture: async () => { attempts += 1; if (attempts === 1) throw new Error('transport hiccup'); },
+  };
+  const session = new BrowserNetworkCaptureSession(source);
+  await session.start({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  await assert.rejects(() => session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /transport hiccup/);
+  // the window is already closed to stop() (no stale collection)...
+  await assert.rejects(() => session.stop({ runId: 'run_1', pageTargetRef: 'page:t-1' }), /requires a prior start/);
+  // ...and a RETRIED abort still reaches the source teardown
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(attempts, 2);
+  // once the teardown succeeded, another abort is a no-op again
+  await session.abort({ runId: 'run_1', pageTargetRef: 'page:t-1' });
+  assert.equal(attempts, 2);
+});
+
+// Codex re-review of PR #5 round 6 (P2): the window key and the source calls must share ONE
+// canonical conversion of the caller's ref. A stateful toString() could otherwise register
+// page A as active while resetting page B, so stop(A) would collect A's unreset pre-boundary
+// buffer (login/recheck traffic) as discovery evidence.
+test('start() canonicalizes the target once (stateful toString cannot split key and reset)', async () => {
+  const resets = [];
+  const source = { collect: async () => [], beginCapture: (i) => resets.push(i.pageTargetRef) };
+  const session = new BrowserNetworkCaptureSession(source);
+  let conversions = 0;
+  const shifty = { toString() { conversions += 1; return conversions === 1 ? 'page:a' : 'page:b'; } };
+  await session.start({ runId: 'run_1', pageTargetRef: shifty });
+  assert.equal(conversions, 1); // converted exactly once
+  assert.deepEqual(resets, ['page:a']); // the reset went to the SAME page the key was derived from
+  // and the active window is the one that was actually reset
+  const result = await session.stop({ runId: 'run_1', pageTargetRef: 'page:a' });
+  assert.deepEqual(result.observations, []);
+});
